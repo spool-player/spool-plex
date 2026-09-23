@@ -1,0 +1,152 @@
+// SPDX-License-Identifier: MPL-2.0
+// Plex JSON to Spool's normalized shapes (see sdk/provider.d.ts).
+
+const types = {
+    movie: 'Movie', show: 'Series', season: 'Season', episode: 'Episode', artist: 'MusicArtist', album: 'MusicAlbum',
+    track: 'Audio', collection: 'BoxSet', playlist: 'Playlist', clip: 'Video', photo: 'Photo', photoalbum: 'PhotoAlbum'
+};
+
+export const collectionTypes = { movie: 'movies', show: 'tvshows', artist: 'music', photo: 'photos' };
+
+// Plex counts milliseconds; Spool counts 100 ns ticks as decimal strings.
+export function ticks(milliseconds) {
+    const value = Number(milliseconds);
+    return Number.isSafeInteger(value) && value >= 0 ? String(value * 10000) : undefined;
+}
+
+export function milliseconds(ticksValue) {
+    return Math.floor((Number(ticksValue) || 0) / 10000);
+}
+
+function date(seconds) {
+    return Number(seconds) > 0 ? new Date(Number(seconds) * 1000).toISOString() : '';
+}
+
+function key(value) {
+    return value === undefined || value === null || value === '' ? undefined : String(value);
+}
+
+const guids = { imdb: 'Imdb', tmdb: 'Tmdb', tvdb: 'Tvdb' };
+function externalIds(raw) {
+    const ids = {};
+    for (const guid of raw.Guid || []) {
+        const match = /^(imdb|tmdb|tvdb):\/\/(.+)$/.exec(String(guid.id || ''));
+        if (match)
+            ids[guids[match[1]]] = match[2];
+    }
+    return ids;
+}
+
+function range(raw) {
+    if (raw.DOVIPresent)
+        return 'DOVI';
+    return { smpte2084: 'HDR10', 'arib-std-b67': 'HLG' }[raw.colorTrc] || '';
+}
+
+export function stream(raw) {
+    const type = { 1: 'Video', 2: 'Audio', 3: 'Subtitle' }[raw.streamType];
+    const hdr = range(raw);
+    return {
+        // Sidecar subtitles have no index in the file.
+        index: Number.isInteger(raw.index) ? raw.index : -1, type: type, codec: raw.codec || '',
+        profile: raw.profile || '', language: raw.languageTag || raw.languageCode || '',
+        title: raw.extendedDisplayTitle || raw.displayTitle || raw.title || '',
+        width: raw.width || 0, height: raw.height || 0, frameRate: raw.frameRate || 0,
+        bitrate: (raw.bitrate || 0) * 1000, bitDepth: raw.bitDepth || 0, channels: raw.channels || 0,
+        sampleRate: raw.samplingRate || 0, range: type === 'Video' ? (hdr ? 'HDR' : 'SDR') : '',
+        rangeType: type === 'Video' ? hdr || 'SDR' : '', default: Boolean(raw.default), forced: Boolean(raw.forced),
+        external: Boolean(raw.key), interlaced: raw.scanType === 'interlaced'
+    };
+}
+
+// Only the file name leaves the server: full paths reveal its layout.
+function variant(raw) {
+    const part = (raw.Part || [])[0] || {};
+    const size = Number(part.size);
+    return {
+        id: String(raw.id), label: [raw.videoResolution && raw.videoResolution.toUpperCase(), raw.editionTitle]
+            .filter(Boolean).join(' · '),
+        container: raw.container || part.container || '', filename: String(part.file || '').split(/[\\/]/).pop(),
+        sizeBytes: Number.isSafeInteger(size) ? String(size) : undefined, bitrate: (raw.bitrate || 0) * 1000,
+        runtimeTicks: ticks(raw.duration), streams: (part.Stream || []).map(stream).filter(s => s.type)
+    };
+}
+
+function people(raw) {
+    const section = key(raw.librarySectionID) || '';
+    const list = [];
+    // A person is a tag within one library: its id says which, and which
+    // kind of credit, so their other work can be listed from it.
+    for (const [field, type, filter] of [['Director', 'Director', 'director'], ['Writer', 'Writer', 'writer'],
+        ['Role', 'Actor', 'actor']]) {
+        for (const person of raw[field] || []) {
+            if (person.id !== undefined && section)
+                list.push({ id: section + '/' + filter + '/' + person.id, name: person.tag || '', type: type,
+                    role: person.role || '', imageTag: person.thumb || '' });
+        }
+    }
+    return list;
+}
+
+export function item(raw) {
+    const id = key(raw.ratingKey);
+    if (!id)
+        throw new Error('missing_id');
+    const type = types[raw.type] || 'Folder';
+    const episode = raw.type === 'episode';
+    const season = raw.type === 'season';
+    const track = raw.type === 'track';
+    const leaves = Number(raw.leafCount) || 0;
+    const result = {
+        id: id, title: raw.title || '', sortName: raw.titleSort || raw.title || '', type: type,
+        overview: raw.summary || '', year: raw.year || 0, runtimeTicks: ticks(raw.duration),
+        resumeTicks: ticks(raw.viewOffset), favorite: Number(raw.userRating) >= 10,
+        played: leaves > 0 ? Number(raw.viewedLeafCount) >= leaves : Number(raw.viewCount) > 0,
+        playCount: raw.viewCount || 0, datePlayed: date(raw.lastViewedAt), dateCreated: date(raw.addedAt),
+        dateUpdated: date(raw.updatedAt), premiereDate: raw.originallyAvailableAt ? raw.originallyAvailableAt + 'T00:00:00Z' : '',
+        childCount: raw.childCount || leaves || 0,
+        seriesId: episode ? key(raw.grandparentRatingKey) : season ? key(raw.parentRatingKey) : undefined,
+        seriesName: episode ? raw.grandparentTitle || '' : season ? raw.parentTitle || '' : '',
+        seasonId: episode ? key(raw.parentRatingKey) : undefined,
+        season: episode && Number.isInteger(raw.parentIndex) ? raw.parentIndex : undefined,
+        episode: Number.isInteger(raw.index) && (episode || season || track) ? raw.index : undefined,
+        album: track ? raw.parentTitle || '' : '', albumId: track ? key(raw.parentRatingKey) : undefined,
+        albumArtist: track ? raw.grandparentTitle || '' : raw.type === 'album' ? raw.parentTitle || '' : '',
+        posterTag: raw.thumb || '', thumbTag: episode ? raw.thumb || '' : '',
+        backdropTag: raw.art || raw.grandparentArt || '',
+        logoTag: ((raw.Image || []).find(image => image.type === 'clearLogo') || {}).url || '',
+        seriesPosterTag: episode ? raw.grandparentThumb || '' : season ? raw.parentThumb || '' : '',
+        albumPosterTag: track ? raw.parentThumb || '' : '',
+        genres: (raw.Genre || []).map(genre => genre.tag), studios: raw.studio ? [raw.studio] : [],
+        officialRating: raw.contentRating || '', communityRating: raw.audienceRating || raw.rating || 0,
+        criticRating: raw.rating ? Math.round(raw.rating * 10) : 0, externalIds: externalIds(raw)
+    };
+    const credits = people(raw);
+    if (credits.length > 0)
+        result.people = credits;
+    if (raw.Media)
+        result.variants = raw.Media.map(variant);
+    return result;
+}
+
+export function container(result) {
+    return (result && result.MediaContainer) || {};
+}
+
+export function page(result, first, limit) {
+    const box = container(result);
+    const rows = box.Metadata || [];
+    const total = Number.isSafeInteger(box.totalSize) ? box.totalSize : null;
+    const exhausted = total !== null ? first + rows.length >= total : rows.length < limit;
+    return { items: rows.filter(row => key(row.ratingKey)).map(item), total: total, exhausted: exhausted,
+        cursor: exhausted ? null : String(first + rows.length) };
+}
+
+// Plex marks intros and credits on the item it describes.
+export function segments(raw) {
+    const kinds = { intro: 'Intro', credits: 'Outro', commercial: 'Commercial' };
+    return ((raw && raw.Marker) || []).filter(marker => kinds[marker.type]).map(marker => ({
+        type: kinds[marker.type], startTicks: ticks(marker.startTimeOffset) || '0',
+        endTicks: ticks(marker.endTimeOffset) || '0'
+    }));
+}

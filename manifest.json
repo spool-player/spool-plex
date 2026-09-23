@@ -1,0 +1,23 @@
+{
+  "format": 2,
+  "api": "0.2",
+  "id": "spool.plex",
+  "name": "Plex",
+  "version": "0.1.0",
+  "publisher": "Spool",
+  "summary": "Your Plex Media Server",
+  "homepage": "https://github.com/spool-player/spool-plex",
+  "icon": "assets/icon.svg",
+  "entry": "logic/provider.mjs",
+  "capabilities": ["search", "userState", "reporting", "segments", "streamQuality"],
+  "origins": ["https://plex.tv"],
+  "ui": {
+    "login": "ui/Login.qml",
+    "picker": "ui/Picker.qml"
+  },
+  "actions": [
+    {"id": "playlist", "label": "Add to playlist", "icon": "playlist_add",
+      "types": ["Movie", "Episode", "Audio", "MusicAlbum", "Video"]},
+    {"id": "delete", "label": "Delete from server", "icon": "delete"}
+  ]
+}
