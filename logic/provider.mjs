@@ -3,6 +3,7 @@
 
 import { collectionTypes, container, item, milliseconds, page, segments, stream } from './items.mjs';
 import { connect } from './events.mjs';
+import { playbackPlan } from './profile.mjs';
 
 const plexTv = 'https://plex.tv';
 const library = 'com.plexapp.plugins.library';
@@ -60,20 +61,23 @@ function parse(response) {
     return response.body ? JSON.parse(response.body) : {};
 }
 
-// Local addresses first, then remote, then Plex's relay; a local server is
-// also tried over plain HTTP in case its certificate name does not resolve.
+// Prefer local addresses, then remote, then Plex's relay. Advertised local
+// addresses also get an HTTP fallback when the plex.direct certificate fails.
 export function connections(list) {
     const rank = c => (c.relay ? 2 : c.local ? 0 : 1);
     const sorted = (list || []).filter(c => /^https?:\/\//.test(String(c.uri || ''))).sort((a, b) => rank(a) - rank(b));
     const result = [];
     const add = (uri, local) => {
-        if (!result.some(c => c.uri === uri))
-            result.push({ uri: uri.replace(/\/+$/, ''), local: local });
+        const normalized = uri.replace(/\/+$/, '');
+        if (!result.some(c => c.uri === normalized))
+            result.push({ uri: normalized, local: local });
     };
     for (const c of sorted) {
         add(c.uri, Boolean(c.local) && !c.relay);
-        if (c.local && !c.relay && c.address && c.port)
-            add('http://' + c.address + ':' + c.port, true);
+        if (c.local && !c.relay && c.address && c.port) {
+            const address = c.address.indexOf(':') >= 0 && c.address[0] !== '[' ? '[' + c.address + ']' : c.address;
+            add('http://' + address + ':' + c.port, true);
+        }
     }
     return result;
 }
@@ -84,6 +88,8 @@ export function createSource(configuration, sourceHost) {
     const serverId = configuration.serverId || '';
     const known = configuration.connections || [];
     let server = configuration.server || '';
+    const sessions = {};
+    let disconnect = null;
 
     function tv(host, method, path, parameters, userToken) {
         const suffix = query(parameters || {});
@@ -95,18 +101,27 @@ export function createSource(configuration, sourceHost) {
     // it was signed in with, and the one that answers is remembered.
     function request(host, method, path, parameters) {
         const suffix = query(parameters || {});
-        const attempt = base => host.http(base + path + (suffix ? '?' + suffix : ''),
-            { method: method, headers: headers(device, token) }).then(parse);
-        return attempt(server).catch(error => {
-            if (code(error) !== 'network_error')
-                throw error;
-            return known.map(c => c.uri).filter(uri => uri !== server).reduce((chain, base) => chain.catch(() =>
-                attempt(base).then(result => {
+        const candidates = [server].concat(known.map(c => c.uri).filter(uri => uri !== server));
+        function attempt(index) {
+            const base = candidates[index];
+            return host.http(base + path + (suffix ? '?' + suffix : ''),
+                { method: method, headers: headers(device, token) }).then(parse).then(result => {
+                if (server !== base) {
                     server = base;
                     sourceHost.emit('configuration', { server: base });
-                    return result;
-                })), Promise.reject(error));
-        });
+                    if (disconnect)
+                        disconnect();
+                    disconnect = sourceHost.socket ? connect(sourceHost,
+                        server.replace(/^http/i, 'ws') + '/:/websockets/notifications', headers(device, token)) : null;
+                }
+                return result;
+            }, error => {
+                if (code(error) !== 'network_error' || index + 1 >= candidates.length)
+                    throw error;
+                return attempt(index + 1);
+            });
+        }
+        return attempt(0);
     }
 
     function list(host, path, args, parameters) {
@@ -159,7 +174,6 @@ export function createSource(configuration, sourceHost) {
         });
     }
 
-    let disconnect = null;
     if (server && token && sourceHost.socket)
         disconnect = connect(sourceHost, server.replace(/^http/i, 'ws') + '/:/websockets/notifications',
             headers(device, token));
@@ -172,7 +186,8 @@ export function createSource(configuration, sourceHost) {
 
         // Sign-in: a code linked at plex.tv/link, then one of the account's
         // servers. These run before the account exists.
-        pinStart: (args, host) => tv(host, 'POST', '/api/v2/pins').then(pin => ({ id: String(pin.id), code: pin.code })),
+        pinStart: (args, host) => tv(host, 'POST', '/api/v2/pins', { strong: false })
+            .then(pin => ({ id: String(pin.id), code: pin.code })),
         pinPoll: (args, host) => tv(host, 'GET', '/api/v2/pins/' + segment(String(args.id || ''))).then(pin => {
             if (!pin.authToken)
                 return { pending: true };
@@ -186,15 +201,15 @@ export function createSource(configuration, sourceHost) {
                             connections: connections(r.connections) }))
                 }));
         }),
-        // Every address was allowed by the screen; the first that answers,
-        // in the order connections() put them, is where requests go.
+        // The authenticated root both verifies the token and checks that an
+        // advertised address still belongs to the selected server.
         connect: (args, host) => {
             const target = args.server || {};
             const user = args.user || {};
             const candidates = target.connections || [];
             const reachable = c => Promise.race([
-                host.http(c.uri + '/identity', { headers: headers(device, target.token) })
-                    .then(response => response.status >= 200 && response.status < 300, () => false),
+                host.http(c.uri + '/', { headers: headers(device, target.token) }).then(parse)
+                    .then(result => container(result).machineIdentifier === target.id, () => false),
                 host.delay(4000).then(() => false)
             ]);
             return Promise.all(candidates.map(reachable)).then(answers => {
@@ -220,15 +235,32 @@ export function createSource(configuration, sourceHost) {
             if (key)
                 return sectionParameters(host, key, args)
                     .then(parameters => list(host, '/library/sections/' + key + '/all', args, parameters));
-            // A genre or studio followed from an item: every library of that kind.
+            // Continue across section boundaries instead of dropping every item
+            // after the first page of each library.
+            const match = /^(\d+):(\d+)$/.exec(String(args.cursor || '0:0'));
+            if (!match)
+                throw new Error('invalid_cursor');
             return request(host, 'GET', '/library/sections').then(result => {
                 const wanted = (container(result).Directory || [])
                     .filter(d => !args.collectionType || collectionTypes[d.type] === args.collectionType);
                 const limit = Math.min(Math.max(args.limit || 72, 1), 100);
-                return Promise.all(wanted.map(d => sectionParameters(host, String(d.key), args)
-                    .then(parameters => list(host, '/library/sections/' + d.key + '/all', { limit: limit }, parameters))))
-                    .then(pages => ({ items: [].concat(...pages.map(p => p.items)).slice(0, limit), cursor: null,
-                        exhausted: true }));
+                const rows = [];
+                function collect(index, offset) {
+                    if (index >= wanted.length)
+                        return { items: rows, cursor: null, exhausted: true };
+                    return sectionParameters(host, String(wanted[index].key), args).then(parameters =>
+                        list(host, '/library/sections/' + wanted[index].key + '/all',
+                            { cursor: String(offset), limit: limit - rows.length }, parameters)).then(p => {
+                        rows.push(...p.items);
+                        const nextIndex = p.exhausted ? index + 1 : index;
+                        const nextOffset = p.exhausted ? 0 : Number(p.cursor);
+                        if (rows.length >= limit)
+                            return { items: rows, cursor: nextIndex < wanted.length ? nextIndex + ':' + nextOffset : null,
+                                exhausted: nextIndex >= wanted.length };
+                        return collect(nextIndex, nextOffset);
+                    });
+                }
+                return collect(Number(match[1]), Number(match[2]));
             });
         },
         items: (args, host) => (args.ids || []).length === 0 ? { items: [], cursor: null, exhausted: true }
@@ -290,38 +322,100 @@ export function createSource(configuration, sourceHost) {
                 throw new Error('playback_unavailable');
             const media = raw.Media || [];
             const index = args.variantId ? media.findIndex(m => String(m.id) === args.variantId) : 0;
-            // Never swap in a different edition than the one asked for.
             if (index < 0 || !media[index])
                 throw new Error('selected_variant_unavailable');
-            const part = (media[index].Part || [])[0];
-            if (!part || !part.key)
+            const selected = media[index];
+            const parts = selected.Part || [];
+            if (parts.length > 1)
+                throw new Error('multipart_playback_unsupported');
+            const part = parts[0];
+            if (!part || !/^\/library\/parts\//.test(part.key || '') || part.exists === false || part.accessible === false)
                 throw new Error('selected_variant_unplayable');
-            const streams = (part.Stream || []).map(stream).filter(s => s.type);
-            const video = streams.find(s => s.type === 'Video');
-            const ceiling = args.maxBitrate || args.preferredMaxBitrate || 0;
-            const height = args.maxHeight || args.preferredMaxHeight || 0;
-            const local = known.some(c => c.uri === server && c.local);
-            const codecs = (args.videoCodecs || []).map(c => String(c).toLowerCase());
-            const decodable = !args.restrictVideoCodecs || !video || codecs.indexOf(video.codec.toLowerCase()) >= 0;
-            const fits = (!ceiling || (media[index].bitrate || 0) * 1000 <= ceiling || (args.unlimitedLocalNetwork && local))
-                && (!height || !video || video.height <= height);
+            const plan = playbackPlan(selected, args, known.some(c => c.uri === server && c.local), raw.type !== 'track');
+            if (plan.bitrateKbps < 1)
+                throw new Error('quality_unavailable');
             const session = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
-            const direct = !args.forceTranscode && decodable && fits;
-            const url = direct ? server + part.key : server + '/video/:/transcode/universal/start.m3u8?' + query({
-                path: '/library/metadata/' + raw.ratingKey, mediaIndex: index, partIndex: 0, protocol: 'hls',
-                fastSeek: 1, directPlay: 0, directStream: args.forceTranscode ? 0 : 1, directStreamAudio: 1,
-                videoQuality: 100, maxVideoBitrate: ceiling ? Math.round(ceiling / 1000) : undefined,
-                videoResolution: height ? Math.round(height * 16 / 9) + 'x' + height : undefined,
-                offset: Math.floor(milliseconds(args.positionTicks) / 1000), session: session,
-                'X-Plex-Session-Identifier': session, 'X-Plex-Client-Identifier': device.id, 'X-Plex-Product': 'Spool',
-                'X-Plex-Platform': 'Generic'
-            });
-            return {
-                url: url, headers: { 'X-Plex-Token': token, 'X-Plex-Client-Identifier': String(device.id || 'spool'),
-                    'X-Plex-Session-Identifier': session },
-                variantId: String(media[index].id), playSessionId: session, playMethod: direct ? 'DirectPlay' : 'Transcode',
-                container: direct ? media[index].container || '' : 'mpegts', streams: streams, segments: segments(raw)
+            const kind = raw.type === 'track' ? 'music' : 'video';
+            const endpoint = '/' + kind + '/:/transcode/universal/';
+            const parameters = {
+                path: metadata(String(raw.ratingKey)), mediaIndex: index, partIndex: 0, protocol: 'hls',
+                hasMDE: 1, fastSeek: 1, directPlay: 0, directStream: plan.directStream,
+                directStreamAudio: plan.directStream, videoQuality: 100, maxVideoBitrate: plan.bitrateKbps,
+                audioBitrate: kind === 'music' ? Math.min(320, plan.bitrateKbps) : undefined,
+                videoResolution: plan.resolution, offset: Math.floor(milliseconds(args.positionTicks) / 1000),
+                session: session, location: known.some(c => c.uri === server && c.local) ? 'lan' : 'wan',
+                'X-Plex-Session-Identifier': session, 'X-Plex-Client-Identifier': String(device.id || 'spool'),
+                'X-Plex-Product': 'Spool', 'X-Plex-Platform': 'Generic', 'X-Plex-Client-Profile-Name': 'Chrome'
             };
+            if (plan.height)
+                parameters['X-Plex-Client-Profile-Extra'] =
+                    'add-limitation(scope=videoCodec&scopeName=h264&type=upperBound&name=video.height&value='
+                    + plan.height + '&isRequired=true)';
+            function resolved(outputPart, method) {
+                sessions[session] = { duration: raw.duration || selected.duration, partId: part.id, endpoint: endpoint };
+                return {
+                    url: method === 'DirectPlay' ? server + part.key : server + endpoint + 'start.m3u8?' + query(parameters),
+                    headers: { 'X-Plex-Token': token, 'X-Plex-Client-Identifier': String(device.id || 'spool'),
+                        'X-Plex-Session-Identifier': session },
+                    variantId: String(selected.id), playSessionId: session, playMethod: method,
+                    container: method === 'DirectPlay' ? selected.container || '' : 'mpegts',
+                    streams: (outputPart.Stream || []).map(stream).filter(s => s.type), segments: segments(raw)
+                };
+            }
+            if (plan.direct)
+                return resolved(part, 'DirectPlay');
+            if (kind === 'music')
+                return resolved({ Stream: [] }, 'Transcode');
+            // Ask the server before returning a URL: disabled transcoding,
+            // insufficient permissions and rejected quality must surface here.
+            return request(host, 'GET', endpoint + 'decision', parameters).then(decision => {
+                const box = container(decision);
+                if (['generalDecisionCode', 'mdeDecisionCode', 'transcodeDecisionCode']
+                    .some(key => Number(box[key]) >= 2000))
+                    throw new Error('transcode_unavailable');
+                const output = ((((box.Metadata || [])[0] || {}).Media) || [])[0];
+                const outputPart = output && (output.Part || [])[0];
+                if (!outputPart)
+                    throw new Error('transcode_unavailable');
+                const outputVideo = (outputPart.Stream || []).find(s => s.streamType === 1);
+                if (!outputVideo || outputPart.decision === 'directplay')
+                    throw new Error('transcode_unavailable');
+                if (Number(output.bitrate) * 1000 > plan.ceiling || plan.height
+                    && Number((outputVideo && outputVideo.height) || output.height) > plan.height)
+                    throw new Error('quality_unavailable');
+                const videoDecision = outputVideo && outputVideo.decision;
+                const copied = videoDecision === 'copy' || outputPart.decision === 'copy';
+                if (!plan.directStream && copied)
+                    throw new Error('quality_unavailable');
+                if (args.restrictVideoCodecs && outputVideo && (args.videoCodecs || [])
+                    .map(c => String(c).toLowerCase()).indexOf(String(outputVideo.codec || '').toLowerCase()) < 0)
+                    throw new Error('unsupported_transcode_codec');
+                return resolved(outputPart, copied ? 'DirectStream' : 'Transcode');
+            });
+        }),
+        speedTest: (args, host) => request(host, 'GET', '/library/sections').then(result => {
+            const types = { movie: 1, show: 4, artist: 10 };
+            const libraries = (container(result).Directory || []).filter(d => types[d.type]);
+            function find(index) {
+                if (index >= libraries.length)
+                    throw new Error('speed_test_unavailable');
+                const library = libraries[index];
+                return request(host, 'GET', '/library/sections/' + segment(String(library.key)) + '/all',
+                    { type: types[library.type], 'X-Plex-Container-Start': 0, 'X-Plex-Container-Size': 32 }).then(result => {
+                    for (const row of container(result).Metadata || []) {
+                        for (const media of row.Media || []) {
+                            for (const part of media.Part || []) {
+                                if (Number(part.size) >= 4 * 1024 * 1024 && part.exists !== false
+                                    && part.accessible !== false && /^\/library\/parts\//.test(part.key || ''))
+                                    return host.speedTest({ url: server + part.key, headers: headers(device, token),
+                                        range: true });
+                            }
+                        }
+                    }
+                    return find(index + 1);
+                });
+            }
+            return find(0);
         }),
         segments: (args, host) => request(host, 'GET', metadata(args.itemId), { includeMarkers: 1 })
             .then(result => ({ segments: segments((container(result).Metadata || [])[0]) })),
@@ -329,14 +423,22 @@ export function createSource(configuration, sourceHost) {
             const state = { start: 'playing', progress: args.paused ? 'paused' : 'playing', stop: 'stopped' }[args.event];
             if (!state)
                 throw new Error('invalid_report');
+            const playback = sessions[args.playSessionId] || {};
             const timeline = request(host, 'GET', '/:/timeline', { ratingKey: args.itemId,
-                key: '/library/metadata/' + args.itemId, state: state, time: milliseconds(args.positionTicks),
+                key: metadata(args.itemId), state: state, time: milliseconds(args.positionTicks),
+                duration: playback.duration, partID: playback.partId,
                 'X-Plex-Session-Identifier': args.playSessionId }).then(() => ({}));
-            if (args.event !== 'stop' || args.playMethod !== 'Transcode')
+            if (args.event !== 'stop')
                 return timeline;
-            // A transcode runs on until told otherwise.
-            return timeline.then(() => request(host, 'GET', '/video/:/transcode/universal/stop',
-                { session: args.playSessionId })).then(() => ({}), () => ({}));
+            delete sessions[args.playSessionId];
+            if (args.playMethod !== 'Transcode' && args.playMethod !== 'DirectStream')
+                return timeline;
+            // Stop the server session even if the final timeline update failed,
+            // but do not turn either failure into a false reporting success.
+            const stop = () => request(host, 'GET', (playback.endpoint || '/video/:/transcode/universal/') + 'stop',
+                { session: args.playSessionId });
+            return timeline.then(() => stop().then(() => ({})), error =>
+                stop().then(() => { throw error; }, () => { throw error; }));
         },
 
         favorite: (args, host) => request(host, 'PUT', '/:/rate', { key: args.itemId, identifier: library,

@@ -9,7 +9,7 @@
   "homepage": "https://github.com/spool-player/spool-plex",
   "icon": "assets/icon.svg",
   "entry": "logic/provider.mjs",
-  "capabilities": ["search", "userState", "reporting", "segments", "streamQuality"],
+  "capabilities": ["search", "userState", "reporting", "segments", "streamQuality", "speedTest"],
   "origins": ["https://plex.tv"],
   "ui": {
     "login": "ui/Login.qml",

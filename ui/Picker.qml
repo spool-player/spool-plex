@@ -10,7 +10,8 @@ FocusScope {
 
     property var provider
     readonly property string kind: provider ? String(provider.arguments.kind || "") : ""
-    readonly property bool choosing: kind === "playlist" || kind === "collection"
+    readonly property bool choosing: kind === "playlist"
+    property string error: ""
 
     function activate() {
         const item = Window.activeFocusItem
@@ -25,9 +26,8 @@ FocusScope {
             provider.requestList("targets", {
                                      "kind": kind,
                                      "playlistType": provider.arguments.playlistType || "video"
-                                 })
-        Qt.callLater(() => choosing ? InputKeys.focus(list) : kind === "rename" ? name.focusRow() : InputKeys.focus(
-                                                                                      confirm))
+                                 }).catch(() => error = "Couldn't load playlists. You can still create one.")
+        Qt.callLater(() => choosing ? name.focusRow() : InputKeys.focus(confirm))
     }
 
     ColumnLayout {
@@ -38,12 +38,18 @@ FocusScope {
         AppText {
             text: ({
                        "playlist": "Add to playlist",
-                       "collection": "Add to collection",
-                       "rename": "Rename",
                        "confirm": "Delete from the server?"
                    })[root.kind] || ""
             font.pixelSize: Metrics.titleSizePx
             font.weight: Font.DemiBold
+        }
+
+        SecondaryText {
+            Layout.fillWidth: true
+            visible: root.error.length > 0
+            text: root.error
+            color: Theme.errorText
+            wrapMode: Text.Wrap
         }
 
         ListView {
@@ -77,8 +83,8 @@ FocusScope {
         TextFieldRow {
             id: name
             Layout.fillWidth: true
-            visible: root.choosing || root.kind === "rename"
-            label: root.choosing ? "New " + root.kind : "Name"
+            visible: root.choosing
+            label: "New playlist"
             onAccepted: if (text.trim().length > 0)
                             root.provider.complete({
                                                        "newName": text.trim()
@@ -97,7 +103,7 @@ FocusScope {
                 id: confirm
                 visible: root.kind === "confirm" || name.text.trim().length > 0
                 kind: root.kind === "confirm" ? "danger" : "primary"
-                text: root.kind === "confirm" ? "Delete" : root.choosing ? "Create" : "Save"
+                text: root.kind === "confirm" ? "Delete" : "Create"
                 onClicked: root.provider.complete(root.kind === "confirm" ? {
                                                                                 "confirmed": true
                                                                             } : {

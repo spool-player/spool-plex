@@ -3,8 +3,6 @@ import QtQuick
 import QtQuick.Layouts
 import Spool
 
-// Signing in to Plex: a code to enter at plex.tv/link, then one of the
-// account's servers.
 FocusScope {
     id: root
 
@@ -16,57 +14,102 @@ FocusScope {
     property var servers: []
     property bool busy: false
     property string error: ""
+    property int generation: 0
 
     readonly property var messages: ({
-                                         "server_unreachable": "Couldn't reach that server",
-                                         "network_error": "Couldn't reach Plex"
+                                         "server_unreachable":
+                                         "Couldn't reach that server. Check that Plex Media Server is running.",
+                                         "network_error": "Couldn't reach Plex. Check your connection and try again.",
+                                         "http_401": "Plex rejected the sign-in. Request a new code.",
+                                         "origin_denied": "That server address is not allowed."
                                      })
 
     function fail(reason) {
         busy = false
-        error = messages[reason] || "Something went wrong"
+        error = messages[reason] || "Couldn't sign in. Please try again."
     }
 
     function newCode() {
+        poll.stop()
+        const ticket = ++generation
+        step = "link"
         code = ""
+        pin = ""
         error = ""
+        busy = true
         provider.request("pinStart").then(result => {
+            if (ticket !== generation)
+                return
+            busy = false
             pin = result.id
             code = result.code
             poll.start()
-        }, fail)
+        }, reason => {
+            if (ticket === generation)
+                fail(reason)
+        })
     }
 
-    function linked(result) {
-        poll.stop()
-        user = result.user
-        servers = result.servers || []
-        if (servers.length === 1)
-            choose(servers[0])
-        else if (servers.length === 0)
-            error = "No servers on this Plex account"
-        else
-            step = "servers"
+    function checkCode() {
+        const ticket = generation
+        provider.request("pinPoll", {
+                             "id": pin
+                         }).then(result => {
+                             if (ticket !== generation || step !== "link")
+                                 return
+                             if (result.pending) {
+                                 poll.start()
+                                 return
+                             }
+                             user = result.user
+                             servers = result.servers || []
+                             step = "servers"
+                             if (servers.length === 0)
+                                 error = "No Plex Media Servers are shared with this account."
+                             else if (servers.length === 1)
+                                 choose(servers[0])
+                             else
+                                 Qt.callLater(() => InputKeys.focus(list))
+                         }, reason => {
+                             if (ticket !== generation)
+                                 return
+                             if (reason === "http_404")
+                                 newCode()
+                             else
+                                 fail(reason)
+                         })
     }
 
-    // Every address the server has is allowed, then the first that answers
-    // is the one the account keeps.
     function choose(server) {
+        if (busy)
+            return
+        const ticket = generation
         busy = true
         error = ""
         let allowed = Promise.resolve()
         for (const connection of server.connections)
             allowed = allowed.then(() => provider.allowOrigin(connection.uri))
-        allowed.then(() => provider.request("connect", {
-                                                "server": server,
-                                                "user": root.user
-                                            })).then(account => provider.complete(account), fail)
+        allowed.then(() => {
+            if (ticket !== generation)
+                return null
+            return provider.request("connect", {
+                                        "server": server,
+                                        "user": root.user
+                                    })
+        }).then(account => {
+            if (ticket === generation && account)
+                provider.complete(account)
+        }, reason => {
+            if (ticket === generation) {
+                fail(reason)
+                Qt.callLater(() => InputKeys.focus(list))
+            }
+        })
     }
 
     function back() {
         if (step === "link")
             return false
-        step = "link"
         newCode()
         return true
     }
@@ -75,37 +118,36 @@ FocusScope {
         const item = Window.activeFocusItem
         if (item && typeof item.activate === "function")
             item.activate()
+        else if (item && typeof item.clicked === "function")
+            item.clicked()
     }
 
     Component.onCompleted: newCode()
+    Component.onDestruction: {
+        ++generation
+        poll.stop()
+    }
 
     Timer {
         id: poll
         interval: 2000
-        repeat: true
-        onTriggered: root.provider.request("pinPoll", {
-                                               "id": root.pin
-                                           }).then(result => {
-                                               if (!result.pending)
-                                                   root.linked(result)
-                                           }, reason => {
-                                               // An expired code is gone; show a fresh one.
-                                               if (reason === "http_404") {
-                                                   poll.stop()
-                                                   root.newCode()
-                                               }
-                                           })
+        repeat: false
+        onTriggered: root.checkCode()
     }
 
     ColumnLayout {
-        x: Math.max(Metrics.pageMarginPx, (parent.width - width) / 2)
-        y: Metrics.pageMarginPx
-        width: Math.min(root.width - Metrics.pageMarginPx * 2, Metrics.scaled(560))
+        anchors.fill: parent
+        anchors.margins: Metrics.pageMarginPx
         spacing: Metrics.scaled(12)
 
         AppText {
             Layout.alignment: Qt.AlignHCenter
-            Layout.topMargin: Metrics.scaled(12)
+            text: root.step === "servers" ? "Choose a Plex server" : "Link your Plex account"
+            font.pixelSize: Metrics.titleSizePx
+        }
+
+        AppText {
+            Layout.alignment: Qt.AlignHCenter
             visible: root.step === "link" && root.code.length > 0
             text: root.code
             font.pixelSize: Metrics.scaled(56)
@@ -117,30 +159,42 @@ FocusScope {
             Layout.fillWidth: true
             visible: root.step === "link" && root.code.length > 0
             text: "Enter this code at plex.tv/link"
-            color: Theme.textMuted
             horizontalAlignment: Text.AlignHCenter
         }
 
-        Repeater {
+        ListView {
             id: list
-            model: root.step === "servers" ? root.servers : []
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: root.step === "servers"
+            clip: true
+            spacing: Metrics.scaled(8)
+            model: root.servers
+            keyNavigationEnabled: true
             delegate: ServerCard {
-                id: card
                 required property var modelData
-                required property int index
-                Layout.fillWidth: true
+                focused: ListView.isCurrentItem && list.activeFocus
+                width: list.width
                 title: modelData.name
+                enabled: !root.busy
                 onAccepted: root.choose(modelData)
-                Component.onCompleted: if (index === 0)
-                                           Qt.callLater(() => InputKeys.focus(card))
             }
+            function activate() {
+                if (currentItem && !root.busy)
+                    root.choose(root.servers[currentIndex])
+            }
+        }
+
+        Item {
+            Layout.fillHeight: true
+            visible: root.step === "link"
         }
 
         BusySpinner {
             Layout.alignment: Qt.AlignHCenter
             Layout.preferredWidth: Metrics.scaled(24)
             Layout.preferredHeight: Metrics.scaled(24)
-            running: root.busy || (root.step === "link" && root.code.length === 0 && root.error.length === 0)
+            running: root.busy
             visible: running
         }
 
@@ -151,6 +205,13 @@ FocusScope {
             color: Theme.errorText
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.Wrap
+        }
+
+        ActionButton {
+            Layout.alignment: Qt.AlignHCenter
+            text: root.step === "servers" ? "Use another Plex account" : "Get a new code"
+            enabled: !root.busy
+            onClicked: root.newCode()
         }
     }
 }

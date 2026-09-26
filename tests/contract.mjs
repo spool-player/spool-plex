@@ -7,6 +7,7 @@
 
 import { connections, createSource } from '../logic/provider.mjs';
 import { translate } from '../logic/events.mjs';
+import { run as regressions } from './regressions.mjs';
 
 let step = 'start';
 function check(value, message) {
@@ -78,6 +79,11 @@ function account(down) {
         ['GET ' + local + '/library/onDeck']: { MediaContainer: { Metadata: [film, episode] } },
         ['GET ' + local + '/hubs/search']: { MediaContainer: { Hub: [{ type: 'movie', Metadata: [film] },
             { type: 'place', Metadata: [{ ratingKey: 'x', type: 'place' }] }, { type: 'episode', Metadata: [episode] }] } },
+        ['GET ' + local + '/video/:/transcode/universal/decision']: { MediaContainer: {
+            generalDecisionCode: 1001, transcodeDecisionCode: 1001, Metadata: [{ Media: [{ bitrate: 18000,
+                Part: [{ decision: 'transcode', Stream: [
+                    { streamType: 1, index: 0, codec: 'h264', height: 1080, decision: 'transcode' },
+                    { streamType: 2, index: 1, codec: 'aac' }] }] }] }] } },
         ['GET ' + local + '/:/timeline']: {},
         ['GET ' + local + '/video/:/transcode/universal/stop']: {},
         ['POST ' + local + '/playlists']: {},
@@ -213,7 +219,7 @@ export function run() {
                 { name: 'Player', provides: 'player', clientIdentifier: 'p' },
                 { name: 'Home', provides: 'server,player', clientIdentifier: 'machine', accessToken: 'server-token',
                     connections: [{ uri: remote, local: false }, { uri: local, local: true }] }],
-            ['GET ' + remote + '/identity']: {}
+            ['GET ' + remote + '/']: { MediaContainer: { machineIdentifier: 'machine' } }
         }, [local]);
         return login.pinStart({}, tv.host).then(pin => {
             check(pin.id === '77' && pin.code === 'ABCD', 'a link code');
@@ -243,5 +249,5 @@ export function run() {
             { state: 'stopped', ratingKey: '10' }, { state: 'playing', ratingKey: '11' }] } }, emit, () => later++);
         check(later === 1, 'finished scans become one later change');
         check(events.length === 1 && events[0][1].itemId === '10', 'playback stopped elsewhere changes that item');
-    });
+    }).then(regressions);
 }

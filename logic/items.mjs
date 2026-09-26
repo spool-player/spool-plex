@@ -137,7 +137,7 @@ export function page(result, first, limit) {
     const box = container(result);
     const rows = box.Metadata || [];
     const total = Number.isSafeInteger(box.totalSize) ? box.totalSize : null;
-    const exhausted = total !== null ? first + rows.length >= total : rows.length < limit;
+    const exhausted = rows.length === 0 || (total !== null ? first + rows.length >= total : rows.length < limit);
     return { items: rows.filter(row => key(row.ratingKey)).map(item), total: total, exhausted: exhausted,
         cursor: exhausted ? null : String(first + rows.length) };
 }
