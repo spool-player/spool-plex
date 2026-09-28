@@ -247,3 +247,7 @@ python3 sdk/spool-provider.py feed dist/spool.plex-0.1.0.tar.zst \
 ```
 
 MPL-2.0; see LICENSE and NOTICE.
+
+## Service icon
+
+Plex and the Plex Play logo are trademarks of Plex and used under a license. See https://www.plex.tv/about/privacy-legal/plex-trademarks-and-guidelines/. The icon identifies the connected service; this is an independent Spool integration, not an official Plex client. See [asset attribution](assets/BRANDING.md).

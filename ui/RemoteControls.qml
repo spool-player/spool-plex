@@ -25,37 +25,51 @@ FocusScope {
         return "Couldn't control this player. Check the connection and refresh."
     }
     function refresh() {
-        if (busy) return
+        if (busy)
+            return
         const ticket = ++generation
         busy = true
         problem = ""
-        provider.request("remoteControls", { "targetId": targetId }).then(result => {
-            if (ticket !== generation) return
-            controls = result.controls || []
-            textInput = result.textInput === true
-            mirror = result.mirror === true
-            busy = false
-            Qt.callLater(() => controls.length ? InputKeys.focus(commands) : InputKeys.focus(refreshButton))
-        }, reason => {
-            if (ticket !== generation) return
-            problem = message(reason)
-            busy = false
-        })
+        provider.request("remoteControls", {
+                             "targetId": targetId
+                         }).then(result => {
+                             if (ticket !== generation)
+                                 return
+                             controls = result.controls || []
+                             textInput = result.textInput === true
+                             mirror = result.mirror === true
+                             busy = false
+                             Qt.callLater(() => controls.length ? InputKeys.focus(commands) : InputKeys.focus(
+                                                                      refreshButton))
+                         }, reason => {
+                             if (ticket !== generation)
+                                 return
+                             problem = message(reason)
+                             busy = false
+                         })
     }
     function send(control, value) {
-        if (busy) return
+        if (busy)
+            return
         const ticket = ++generation
         busy = true
         problem = ""
-        provider.request("remoteControl", { "targetId": targetId, "control": control, "text": value }).then(() => {
-            if (ticket !== generation) return
-            busy = false
-            if (control === "text") remoteText.text = ""
-        }, reason => {
-            if (ticket !== generation) return
-            problem = message(reason)
-            busy = false
-        })
+        provider.request("remoteControl", {
+                             "targetId": targetId,
+                             "control": control,
+                             "text": value
+                         }).then(() => {
+                             if (ticket !== generation)
+                                 return
+                             busy = false
+                             if (control === "text")
+                                 remoteText.text = ""
+                         }, reason => {
+                             if (ticket !== generation)
+                                 return
+                             problem = message(reason)
+                             busy = false
+                         })
     }
     Component.onCompleted: refresh()
     Component.onDestruction: ++generation
@@ -94,7 +108,8 @@ FocusScope {
                 onActivated: root.send(modelData.id, undefined)
             }
             function activate() {
-                if (currentItem && !root.busy) currentItem.activated()
+                if (currentItem && !root.busy)
+                    currentItem.activated()
             }
         }
         TextFieldRow {

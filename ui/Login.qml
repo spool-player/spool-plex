@@ -26,7 +26,8 @@ FocusScope {
                                          "http_401": "Plex rejected the sign-in. Request a new code.",
                                          "origin_denied": "That server address is not allowed.",
                                          "home_authentication_failed": "Plex rejected that PIN. Try again.",
-                                         "home_identity_mismatch": "Plex returned a different identity. Link your account again.",
+                                         "home_identity_mismatch":
+                                         "Plex returned a different identity. Link your account again.",
                                          "unsupported_extension": "Update Spool to switch Plex Home users."
                                      })
 
@@ -123,7 +124,9 @@ FocusScope {
         busy = true
         error = ""
         provider.request("homeSelect", {
-                             "user": linkedUser, "userId": selectedHomeUser.id, "pin": value
+                             "user": linkedUser,
+                             "userId": selectedHomeUser.id,
+                             "pin": value
                          }).then(result => {
                              if (ticket !== generation)
                                  return
@@ -214,6 +217,18 @@ FocusScope {
         anchors.margins: Metrics.pageMarginPx
         spacing: Metrics.scaled(12)
 
+        SecondaryText {
+            Layout.fillWidth: true
+            text: "Independent Spool integration for Plex"
+            wrapMode: Text.Wrap
+        }
+
+        SecondaryText {
+            Layout.fillWidth: true
+            text: "Plex and the Plex Play logo are trademarks of Plex and used under a license."
+            wrapMode: Text.Wrap
+        }
+
         CompatibilityNotice {
             Layout.fillWidth: true
             provider: root.provider
@@ -221,9 +236,11 @@ FocusScope {
 
         AppText {
             Layout.alignment: Qt.AlignHCenter
-            text: root.step === "servers" ? "Choose a Plex server"
-                  : root.step === "home" ? "Choose a Plex Home user"
-                  : root.step === "homePin" ? "PIN for " + root.selectedHomeUser.name : "Link your Plex account"
+            text: root.step === "servers" ? "Choose a Plex server" : root.step === "home" ? "Choose a Plex Home user" :
+                                                                                            root.step === "homePin"
+                                                                                            ? "PIN for "
+                                                                                              + root.selectedHomeUser.name :
+                                                                                              "Link your Plex account"
             font.pixelSize: Metrics.titleSizePx
         }
 
