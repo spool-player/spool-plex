@@ -9,11 +9,15 @@
   "homepage": "https://github.com/spool-player/spool-plex",
   "icon": "assets/icon.svg",
   "entry": "logic/provider.mjs",
-  "capabilities": ["search", "userState", "reporting", "segments", "streamQuality", "speedTest"],
+  "capabilities": ["search", "userState", "reporting", "segments", "streamQuality"],
+  "extensions": {"spool.speed-test": 1, "spool.suggestions": 1, "spool.item-actions": 1, "spool.collection-editing": 1,
+    "spool.playback-queue-reporting": 1, "spool.remote-targets": 1,
+    "spool.http-metadata": 1, "spool.origin-grants": 1, "spool.account-activation": 1},
   "origins": ["https://plex.tv"],
   "ui": {
     "login": "ui/Login.qml",
-    "picker": "ui/Picker.qml"
+    "picker": "ui/Picker.qml",
+    "settings": "ui/Settings.qml"
   },
   "actions": [
     {"id": "playlist", "label": "Add to playlist", "icon": "playlist_add",

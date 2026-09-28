@@ -11,11 +11,20 @@ export const collectionTypes = { movie: 'movies', show: 'tvshows', artist: 'musi
 // Plex counts milliseconds; Spool counts 100 ns ticks as decimal strings.
 export function ticks(milliseconds) {
     const value = Number(milliseconds);
-    return Number.isSafeInteger(value) && value >= 0 ? String(value * 10000) : undefined;
+    return Number.isSafeInteger(value) && value >= 0 ? (value === 0 ? '0' : String(value) + '0000') : undefined;
 }
 
 export function milliseconds(ticksValue) {
-    return Math.floor((Number(ticksValue) || 0) / 10000);
+    if (ticksValue === undefined)
+        ticksValue = '0';
+    if (typeof ticksValue === 'number' && Number.isSafeInteger(ticksValue))
+        ticksValue = String(ticksValue);
+    if (typeof ticksValue !== 'string' || !/^(0|[1-9][0-9]*)$/.test(ticksValue)
+        || ticksValue.length > 19 || (ticksValue.length === 19 && ticksValue > '9223372036854775807'))
+        throw new Error('invalid_position');
+    // Divide the exact decimal first. The quotient of any nonnegative int64
+    // tick value fits in a safe JS integer; converting before division does not.
+    return ticksValue.length <= 4 ? 0 : Number(ticksValue.slice(0, -4));
 }
 
 function date(seconds) {
@@ -99,6 +108,8 @@ export function item(raw) {
     const leaves = Number(raw.leafCount) || 0;
     const result = {
         id: id, title: raw.title || '', sortName: raw.titleSort || raw.title || '', type: type,
+        entryId: typeof raw.playlistItemID === 'string' && raw.playlistItemID
+            ? raw.playlistItemID : Number.isSafeInteger(raw.playlistItemID) ? String(raw.playlistItemID) : undefined,
         overview: raw.summary || '', year: raw.year || 0, runtimeTicks: ticks(raw.duration),
         resumeTicks: ticks(raw.viewOffset), favorite: Number(raw.userRating) >= 10,
         played: leaves > 0 ? Number(raw.viewedLeafCount) >= leaves : Number(raw.viewCount) > 0,
@@ -135,7 +146,7 @@ export function container(result) {
 
 export function page(result, first, limit) {
     const box = container(result);
-    const rows = box.Metadata || [];
+    const rows = box.Metadata || box.Directory || [];
     const total = Number.isSafeInteger(box.totalSize) ? box.totalSize : null;
     const exhausted = rows.length === 0 || (total !== null ? first + rows.length >= total : rows.length < limit);
     return { items: rows.filter(row => key(row.ratingKey)).map(item), total: total, exhausted: exhausted,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import { createSource, connections } from '../logic/provider.mjs';
 import { maxBitrate, maxHeight, playbackPlan } from '../logic/profile.mjs';
-import { page } from '../logic/items.mjs';
+import { item, milliseconds, page, ticks } from '../logic/items.mjs';
 
 function check(value, message) {
     if (!value)
@@ -23,8 +23,8 @@ const origin = 'https://server.plex.direct:32400';
 const media = { id: 2, bitrate: 40000, container: 'mkv', Part: [{ id: 3, key: '/library/parts/3/1/file.mkv',
     size: 8388608, Stream: [{ streamType: 1, codec: 'hevc', index: 0, width: 3840, height: 2160 }] }] };
 const movie = { ratingKey: '1', type: 'movie', title: 'Film', duration: 7200000, Media: [media] };
-function fixture(handler) {
-    const host = { device: { id: 'device' }, emit: () => {}, delay: () => new Promise(() => {}),
+function fixture(handler, extensions) {
+    const host = { device: { id: 'device' }, extensions: extensions, emit: () => {}, delay: () => new Promise(() => {}),
         http: (url, options) => {
             const path = url.slice(url.indexOf('/', 8)).split('?')[0];
             if (path === '/library/metadata/1')
@@ -116,7 +116,7 @@ export function run() {
                     'the remux session is released even when its final timeline fails');
             });
         });
-    }).then(authenticate).then(browse).then(probe);
+    }).then(authenticate).then(browse).then(probe).then(baselineRepairs);
 }
 
 function authenticate() {
@@ -164,7 +164,7 @@ function probe() {
         if (path === '/library/sections/2/all')
             return response({ Metadata: [movie] });
         throw new Error('a speed test must not create a playback session');
-    });
+    }, { 'spool.speed-test': 1 });
     pms.host.speedTest = value => {
         endpoint = value;
         return Promise.resolve({ bitrate: 18000000, parallelRequests: 2 });
@@ -172,7 +172,52 @@ function probe() {
     return pms.source.speedTest({}, pms.host).then(() => {
         check(endpoint.range === true && endpoint.url === origin + media.Part[0].key
             && endpoint.headers['X-Plex-Token'] === 'secret', 'probe skips tiny/offline files and ranges real media natively');
-        const empty = fixture(() => response({ Directory: [{ key: '3', type: 'photo' }] }));
+        const empty = fixture(() => response({ Directory: [{ key: '3', type: 'photo' }] }), { 'spool.speed-test': 1 });
         return fails(() => empty.source.speedTest({}, empty.host), 'speed_test_unavailable');
+    });
+}
+
+function baselineRepairs() {
+    const entries = [0, 'opaque/second:entry'].map(entry =>
+        item({ ratingKey: '1', type: 'movie', playlistItemID: entry }));
+    check(entries[0].id === entries[1].id && entries[0].entryId === '0'
+        && entries[1].entryId === 'opaque/second:entry', 'duplicate media keeps distinct playlist occurrence identities');
+    check(item({ ratingKey: '1', type: 'movie' }).entryId === undefined, 'ordinary media has no invented entry identity');
+    check(milliseconds('9007199254749999') === 900719925474,
+        'decimal division floors a value that Number would round across a millisecond boundary');
+    check(milliseconds('9223372036854775807') === 922337203685477,
+        'int64 upper boundary has a safe integer millisecond quotient');
+    check(milliseconds('9999') === 0 && milliseconds('10000') === 1, 'sub-millisecond remainder is floored');
+    check(ticks(9007199254741) === '90071992547410000', 'incoming milliseconds become exact decimal ticks too');
+    const calls = [];
+    const host = { device: { id: 'device' }, http: (url, options) => {
+        calls.push({ url: url, options: options });
+        if (url.indexOf('/library/metadata/1?') >= 0)
+            return response({ Metadata: [movie] });
+        if (url.indexOf('/decision?') >= 0)
+            return decision(4000, 720, false);
+        return response({});
+    } };
+    const source = createSource({ server: origin, token: 'secret', serverId: 'machine' }, host);
+    const decimal = '9007199254749999';
+    return source.resolve({ itemId: '1', forceTranscode: true, positionTicks: decimal }, host).then(result => {
+        check(parameter(result.url, 'offset') === '900719925', 'resolve uses exact milliseconds before converting to seconds');
+        return ['start', 'progress', 'stop'].reduce((pending, event) => pending.then(() =>
+            source.report({ event: event, itemId: '1', positionTicks: decimal }, host).then(() => {
+                check(parameter(calls[calls.length - 1].url, 'time') === '900719925474',
+                    event + ' reports the floored decimal position, never the rounded Number');
+            })), Promise.resolve());
+    }).then(() => source.progress({ itemId: '1', positionTicks: '9223372036854775807' }, host)).then(() => {
+        check(parameter(calls[calls.length - 1].url, 'time') === '922337203685477',
+            'resume writes preserve the largest signed64 tick position');
+        const count = calls.length;
+        return ['-1', '', '1.5', '1e3', ' 1', '+1', '01', '9223372036854775808', null, 9007199254740992]
+            .reduce((pending, invalid) => pending.then(() =>
+                fails(() => source.resolve({ itemId: '1', positionTicks: invalid }, host), 'invalid_position')
+                    .then(() => fails(() => source.report({ event: 'start', itemId: '1', positionTicks: invalid }, host),
+                        'invalid_position'))
+                    .then(() => fails(() => source.progress({ itemId: '1', positionTicks: invalid }, host),
+                        'invalid_position'))), Promise.resolve()).then(() =>
+                check(calls.length === count, 'invalid positions fail before any metadata or playback HTTP'));
     });
 }

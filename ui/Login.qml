@@ -12,6 +12,9 @@ FocusScope {
     property string code: ""
     property var user: ({})
     property var servers: []
+    property var homeUsers: []
+    property var linkedUser: ({})
+    property var selectedHomeUser: ({})
     property bool busy: false
     property string error: ""
     property int generation: 0
@@ -21,7 +24,10 @@ FocusScope {
                                          "Couldn't reach that server. Check that Plex Media Server is running.",
                                          "network_error": "Couldn't reach Plex. Check your connection and try again.",
                                          "http_401": "Plex rejected the sign-in. Request a new code.",
-                                         "origin_denied": "That server address is not allowed."
+                                         "origin_denied": "That server address is not allowed.",
+                                         "home_authentication_failed": "Plex rejected that PIN. Try again.",
+                                         "home_identity_mismatch": "Plex returned a different identity. Link your account again.",
+                                         "unsupported_extension": "Update Spool to switch Plex Home users."
                                      })
 
     function fail(reason) {
@@ -36,6 +42,11 @@ FocusScope {
         code = ""
         pin = ""
         error = ""
+        user = ({})
+        linkedUser = ({})
+        homeUsers = []
+        servers = []
+        homePin.text = ""
         busy = true
         provider.request("pinStart").then(result => {
             if (ticket !== generation)
@@ -62,14 +73,14 @@ FocusScope {
                                  return
                              }
                              user = result.user
-                             servers = result.servers || []
-                             step = "servers"
-                             if (servers.length === 0)
-                                 error = "No Plex Media Servers are shared with this account."
-                             else if (servers.length === 1)
-                                 choose(servers[0])
-                             else
+                             linkedUser = result.user
+                             homeUsers = result.homeUsers || []
+                             if (homeUsers.length) {
+                                 step = "home"
                                  Qt.callLater(() => InputKeys.focus(list))
+                             } else {
+                                 showServers(result)
+                             }
                          }, reason => {
                              if (ticket !== generation)
                                  return
@@ -77,6 +88,55 @@ FocusScope {
                                  newCode()
                              else
                                  fail(reason)
+                         })
+    }
+    function showServers(result) {
+        user = result.user
+        servers = result.servers || []
+        step = "servers"
+        if (servers.length === 0)
+            error = "No Plex Media Servers are shared with this account."
+        else if (servers.length === 1)
+            choose(servers[0])
+        else
+            Qt.callLater(() => InputKeys.focus(list))
+    }
+
+    function chooseHome(member) {
+        if (busy)
+            return
+        selectedHomeUser = member
+        homePin.text = ""
+        error = ""
+        if (member.homeProtected) {
+            step = "homePin"
+            Qt.callLater(() => homePin.focusRow())
+        } else {
+            submitHome("")
+        }
+    }
+
+    function submitHome(value) {
+        if (busy)
+            return
+        const ticket = ++generation
+        busy = true
+        error = ""
+        provider.request("homeSelect", {
+                             "user": linkedUser, "userId": selectedHomeUser.id, "pin": value
+                         }).then(result => {
+                             if (ticket !== generation)
+                                 return
+                             busy = false
+                             homePin.text = ""
+                             showServers(result)
+                         }, reason => {
+                             if (ticket === generation) {
+                                 homePin.text = ""
+                                 fail(reason)
+                                 if (step === "homePin")
+                                     Qt.callLater(() => homePin.focusRow())
+                             }
                          })
     }
 
@@ -110,6 +170,17 @@ FocusScope {
     function back() {
         if (step === "link")
             return false
+        if (homeUsers.length && (step === "servers" || step === "homePin")) {
+            ++generation
+            busy = false
+            error = ""
+            homePin.text = ""
+            user = linkedUser
+            servers = []
+            step = "home"
+            Qt.callLater(() => InputKeys.focus(list))
+            return true
+        }
         newCode()
         return true
     }
@@ -126,6 +197,9 @@ FocusScope {
     Component.onDestruction: {
         ++generation
         poll.stop()
+        user = ({})
+        linkedUser = ({})
+        homePin.text = ""
     }
 
     Timer {
@@ -140,9 +214,16 @@ FocusScope {
         anchors.margins: Metrics.pageMarginPx
         spacing: Metrics.scaled(12)
 
+        CompatibilityNotice {
+            Layout.fillWidth: true
+            provider: root.provider
+        }
+
         AppText {
             Layout.alignment: Qt.AlignHCenter
-            text: root.step === "servers" ? "Choose a Plex server" : "Link your Plex account"
+            text: root.step === "servers" ? "Choose a Plex server"
+                  : root.step === "home" ? "Choose a Plex Home user"
+                  : root.step === "homePin" ? "PIN for " + root.selectedHomeUser.name : "Link your Plex account"
             font.pixelSize: Metrics.titleSizePx
         }
 
@@ -166,23 +247,57 @@ FocusScope {
             id: list
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: root.step === "servers"
+            visible: root.step === "servers" || root.step === "home"
             clip: true
             spacing: Metrics.scaled(8)
-            model: root.servers
+            model: root.step === "home" ? root.homeUsers : root.servers
             keyNavigationEnabled: true
             delegate: ServerCard {
                 required property var modelData
                 focused: ListView.isCurrentItem && list.activeFocus
                 width: list.width
-                title: modelData.name
+                title: modelData.name + (root.step === "home" && modelData.homeProtected ? " · PIN required" : "")
                 enabled: !root.busy
-                onAccepted: root.choose(modelData)
+                onAccepted: root.step === "home" ? root.chooseHome(modelData) : root.choose(modelData)
             }
             function activate() {
-                if (currentItem && !root.busy)
-                    root.choose(root.servers[currentIndex])
+                if (currentItem && !root.busy) {
+                    if (root.step === "home")
+                        root.chooseHome(root.homeUsers[currentIndex])
+                    else
+                        root.choose(root.servers[currentIndex])
+                }
             }
+        }
+        TextFieldRow {
+            id: homePin
+            Layout.fillWidth: true
+            visible: root.step === "homePin"
+            enabled: !root.busy
+            label: "Plex Home PIN"
+            echoMode: TextInput.Password
+            inputMethodHints: Qt.ImhDigitsOnly | Qt.ImhNoPredictiveText
+            onAccepted: root.submitHome(text)
+        }
+
+        ActionButton {
+            visible: root.step === "homePin"
+            enabled: !root.busy
+            text: "Continue"
+            onClicked: root.submitHome(homePin.text)
+        }
+
+        SecondaryText {
+            Layout.fillWidth: true
+            visible: root.step === "home" || root.step === "homePin"
+            text: "Plex Home PINs protect this Plex Home, not other providers signed in to Spool."
+            wrapMode: Text.Wrap
+        }
+
+        ActionButton {
+            visible: root.step === "homePin" || root.step === "servers" && root.homeUsers.length > 0
+            text: "Back to Home users"
+            onClicked: root.back()
         }
 
         Item {
@@ -209,7 +324,7 @@ FocusScope {
 
         ActionButton {
             Layout.alignment: Qt.AlignHCenter
-            text: root.step === "servers" ? "Use another Plex account" : "Get a new code"
+            text: root.step !== "link" ? "Use another Plex account" : "Get a new code"
             enabled: !root.busy
             onClicked: root.newCode()
         }

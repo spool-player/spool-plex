@@ -8,6 +8,10 @@
 import { connections, createSource } from '../logic/provider.mjs';
 import { translate } from '../logic/events.mjs';
 import { run as regressions } from './regressions.mjs';
+import { run as catalogue } from './catalogue.mjs';
+import { run as playQueue } from './play-queue.mjs';
+import { run as remoteContracts } from './remote.mjs';
+import { run as home } from './home.mjs';
 
 let step = 'start';
 function check(value, message) {
@@ -70,6 +74,7 @@ const episode = { ratingKey: '20', type: 'episode', title: 'Pilot', index: 1, pa
 
 function account(down) {
     const pms = server({
+        ['GET ' + local + '/']: { MediaContainer: {} },
         ['GET ' + local + '/library/sections/1/all']: { MediaContainer: { totalSize: 3, Metadata: [film] } },
         ['GET ' + remote + '/library/sections/1/all']: { MediaContainer: { totalSize: 3, Metadata: [film] } },
         ['GET ' + local + '/library/sections/1/genre']: { MediaContainer: { Directory: [{ key: '55', title: 'Drama' }] } },
@@ -92,6 +97,31 @@ function account(down) {
     const source = createSource({ server: local, token: 'server-token', serverId: 'machine',
         connections: [{ uri: local, local: true }, { uri: remote, local: false }] }, { device: device, emit: pms.host.emit });
     return { pms: pms, source: source };
+}
+
+function extensionCompatibility() {
+    step = 'optional speed extension';
+    const legacy = account();
+    const current = createSource({}, { device: device, extensions: { 'spool.speed-test': 1, 'future.feature': 1 } });
+    const wrong = createSource({}, { device: device, extensions: { 'spool.speed-test': 2 } });
+    const stringVersion = createSource({}, { device: device, extensions: { 'spool.speed-test': '1' } });
+    check(Object.keys(legacy.source.describe().extensions).length === 0
+        && legacy.source.extensionStatus().missingHost.indexOf('spool.suggestions') >= 0,
+        'an old host advertises no optional features regardless of device version');
+    check(current.describe().extensions['spool.speed-test'] === 1
+        && Object.keys(current.extensionStatus().enabled).join(',') === 'spool.speed-test'
+        && current.extensionStatus().missingHost.indexOf('spool.speed-test') < 0,
+        'only implemented exact versions are offered');
+    check(Object.keys(wrong.extensionStatus().enabled).length === 0
+        && Object.keys(stringVersion.extensionStatus().enabled).length === 0,
+        'higher versions and strings do not negotiate version one');
+    let probes = 0;
+    legacy.pms.host.speedTest = () => { ++probes; return Promise.resolve({}); };
+    return fails(() => legacy.source.speedTest({}, legacy.pms.host), 'unsupported_extension')
+        .then(() => fails(() => wrong.speedTest({}, legacy.pms.host), 'unsupported_extension'))
+        .then(() => fails(() => stringVersion.speedTest({}, legacy.pms.host), 'unsupported_extension'))
+        .then(() => check(legacy.pms.calls.length === 0 && probes === 0,
+            'unsupported calls cannot inspect libraries or start native probes'));
 }
 
 export function run() {
@@ -249,5 +279,5 @@ export function run() {
             { state: 'stopped', ratingKey: '10' }, { state: 'playing', ratingKey: '11' }] } }, emit, () => later++);
         check(later === 1, 'finished scans become one later change');
         check(events.length === 1 && events[0][1].itemId === '10', 'playback stopped elsewhere changes that item');
-    }).then(regressions);
+    }).then(regressions).then(extensionCompatibility).then(catalogue).then(playQueue).then(remoteContracts).then(home);
 }
