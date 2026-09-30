@@ -130,10 +130,11 @@ and [decision handling](https://github.com/plexinc/plex-for-kodi/blob/master/lib
 
 ### Boundaries
 
-Watch-together, external sidecar subtitle attachment, and multi-part file chaining
-are not supported by this provider. Multi-part editions
-are explicitly rejected instead of playing only their first file. Embedded subtitles remain
-available to the player. Searches are bounded Plex hub results, not a paginated complete index;
+Watch-together and multi-part file chaining are not supported by this provider.
+Multi-part editions are explicitly rejected instead of playing only their first file.
+Embedded subtitles and external sidecar streams served from `/library/streams/`
+are handed to the player; playback headers authenticate sidecar downloads.
+Searches are bounded Plex hub results, not a paginated complete index;
 cross-library browsing pages through libraries in server order, sorting within each library.
 Playlist additions and deletion use the signed-in user's permissions; deletion requires confirmation.
 Playlist rows retain Plex's `playlistItemID` as an opaque `entryId`, preserving the
@@ -224,13 +225,18 @@ cmake -S sdk -B build/sdk -G Ninja && cmake --build build/sdk
 timeout 20s build/sdk/provider-contract-runner tests/contract.mjs
 QV4_FORCE_INTERPRETER=1 timeout 20s build/sdk/provider-contract-runner tests/contract.mjs
 python3 sdk/spool-provider.py build .
-python3 sdk/spool-provider.py validate dist/spool.plex-0.1.0.tar.zst
+VERSION=$(python3 -c 'import json; print(json.load(open("manifest.json"))["version"])')
+python3 sdk/spool-provider.py validate "dist/spool.plex-$VERSION.tar.zst"
 ```
 
 To try a checkout in Spool without releasing it, configure Spool with
 `-DSPOOL_PROVIDER_OVERRIDES=spool.plex=/path/to/spool-plex`.
 
 ## Releasing
+
+Current release: **0.1.5**, adding authenticated sidecar subtitles to playback
+and database IDs in search results for cross-provider duplicate detection,
+while retaining custom-address sign-in from 0.1.4.
 
 Bump `version` in `manifest.json` when needed, push `main`, then push the matching `v<version>` tag.
 The workflow verifies pinned SDK hashes, runs the contract in Qt JIT and interpreter modes,
@@ -239,16 +245,18 @@ GitHub release. For the current manifest:
 
 ```sh
 git push -u origin main
-git tag v0.1.0
-git push origin v0.1.0
+VERSION=$(python3 -c 'import json; print(json.load(open("manifest.json"))["version"])')
+git tag "v$VERSION"
+git push origin "v$VERSION"
 ```
 
 The optional `STORE_DISPATCH_TOKEN` secret asks `spool-providers` to refresh immediately; otherwise
 the store discovers the release on its normal schedule. An equivalent local feed-entry command is:
 
 ```sh
-python3 sdk/spool-provider.py feed dist/spool.plex-0.1.0.tar.zst \
-  --url https://github.com/spool-player/spool-plex/releases/download/v0.1.0/spool.plex-0.1.0.tar.zst
+VERSION=$(python3 -c 'import json; print(json.load(open("manifest.json"))["version"])')
+python3 sdk/spool-provider.py feed "dist/spool.plex-$VERSION.tar.zst" \
+  --url "https://github.com/spool-player/spool-plex/releases/download/v$VERSION/spool.plex-$VERSION.tar.zst"
 ```
 
 MPL-2.0; see LICENSE and NOTICE.

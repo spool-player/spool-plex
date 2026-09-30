@@ -39,9 +39,18 @@ const guids = { imdb: 'Imdb', tmdb: 'Tmdb', tvdb: 'Tvdb' };
 function externalIds(raw) {
     const ids = {};
     for (const guid of raw.Guid || []) {
-        const match = /^(imdb|tmdb|tvdb):\/\/(.+)$/.exec(String(guid.id || ''));
+        const match = /^(imdb|tmdb|tvdb):\/\/([^/?#]+)/i.exec(String(guid.id || ''));
         if (match)
-            ids[guids[match[1]]] = match[2];
+            ids[guids[match[1].toLowerCase()]] = match[2];
+    }
+    // Older agents expose a single guid instead of Guid[]. TVDb episode
+    // paths start with the show's ID, so they are not episode identities.
+    const legacy = /^(?:com\.plexapp\.agents\.)?(imdb|themoviedb|thetvdb):\/\/([^/?#]+)(?:[/?#]|$)/i
+        .exec(String(raw.guid || ''));
+    if (legacy && (raw.type === 'movie' || raw.type === 'show')) {
+        const namespace = { imdb: 'Imdb', themoviedb: 'Tmdb', thetvdb: 'Tvdb' }[legacy[1].toLowerCase()];
+        if (!ids[namespace])
+            ids[namespace] = legacy[2];
     }
     return ids;
 }

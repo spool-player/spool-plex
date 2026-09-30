@@ -495,7 +495,8 @@ export function createSource(configuration, sourceHost) {
             : all(host, '/library/metadata/' + args.ids.map(id => segment(String(id))).join(',')),
         search: (args, host) => {
             const limit = Math.min(Math.max(args.limit || 40, 1), 100);
-            return request(host, 'GET', '/hubs/search', { query: args.query, limit: limit, includeCollections: 1 })
+            return request(host, 'GET', '/hubs/search',
+                { query: args.query, limit: limit, includeCollections: 1, includeGuids: 1 })
                 .then(result => {
                     const rows = [];
                     for (const hub of container(result).Hub || []) {

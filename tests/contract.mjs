@@ -83,8 +83,22 @@ function account(down) {
             { key: '2', title: 'Shows', type: 'show' }] } },
         ['GET ' + local + '/library/metadata/10']: { MediaContainer: { Metadata: [film] } },
         ['GET ' + local + '/library/onDeck']: { MediaContainer: { Metadata: [film, episode] } },
-        ['GET ' + local + '/hubs/search']: { MediaContainer: { Hub: [{ type: 'movie', Metadata: [film] },
-            { type: 'place', Metadata: [{ ratingKey: 'x', type: 'place' }] }, { type: 'episode', Metadata: [episode] }] } },
+        ['GET ' + local + '/hubs/search']: call => {
+            const includeGuids = /[?&]includeGuids=1(?:&|$)/.test(call.url);
+            const searchFilm = Object.assign({}, film, { Guid: includeGuids ? film.Guid : undefined });
+            const legacyFilm = { ratingKey: 'legacy-film', type: 'movie', title: 'Legacy film',
+                guid: 'com.plexapp.agents.imdb://tt1234567?lang=en' };
+            const legacyShow = { ratingKey: 'legacy-show', type: 'show', title: 'Legacy show',
+                guid: 'com.plexapp.agents.thetvdb://456?lang=en' };
+            const legacyEpisode = Object.assign({}, episode,
+                { guid: 'com.plexapp.agents.thetvdb://456/0/1?lang=en' });
+            return respond({ MediaContainer: { Hub: [
+                { type: 'movie', Metadata: [searchFilm, legacyFilm] },
+                { type: 'show', Metadata: [legacyShow] },
+                { type: 'place', Metadata: [{ ratingKey: 'x', type: 'place' }] },
+                { type: 'episode', Metadata: [legacyEpisode] }
+            ] } });
+        },
         ['GET ' + local + '/video/:/transcode/universal/decision']: { MediaContainer: {
             generalDecisionCode: 1001, transcodeDecisionCode: 1001, Metadata: [{ Media: [{ bitrate: 18000,
                 Part: [{ decision: 'transcode', Stream: [
@@ -141,7 +155,7 @@ export function run() {
 
     step = 'search';
     return source.search({ query: 'film', limit: 10 }, pms.host).then(page => {
-        check(page.items.length === 2 && page.items[0].id === '10' && page.items[1].type === 'Episode',
+        check(page.items.length === 4 && page.items[0].id === '10' && page.items[3].type === 'Episode',
             'hubs of media, in order; others dropped');
         const headers = pms.calls[0].options.headers;
         check(headers['X-Plex-Token'] === 'server-token' && headers['X-Plex-Client-Identifier'] === 'device-1'
@@ -150,7 +164,10 @@ export function run() {
         check(found.resumeTicks === '600000000' && found.runtimeTicks === '72000000000', 'milliseconds become ticks');
         check(found.favorite && !found.played && found.externalIds.Imdb === 'tt1' && found.externalIds.Tmdb === '42',
             'user state and external ids');
-        const show = page.items[1];
+        check(page.items[1].externalIds.Imdb === 'tt1234567' && page.items[2].externalIds.Tvdb === '456',
+            'legacy movie and show agent GUIDs retain database identities');
+        const show = page.items[3];
+        check(!show.externalIds.Tvdb, 'a legacy episode path never masquerades as its parent TVDb show');
         check(show.seriesId === '18' && show.seasonId === '19' && show.season === 0 && show.episode === 1
             && show.seriesPosterTag === '/poster' && show.thumbTag === '/still', 'episode shape, season zero kept');
         step = 'browse';
