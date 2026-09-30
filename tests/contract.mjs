@@ -68,7 +68,8 @@ const film = { ratingKey: '10', key: '/library/metadata/10', type: 'movie', titl
             { streamType: 3, codec: 'srt', key: '/library/streams/9' }] }] },
     { id: 101, videoResolution: '1080', bitrate: 8000, container: 'mp4', Part: [{ id: 1001,
         key: '/library/parts/1001/1/file.mp4', file: 'D:\\media\\Film.mp4', Stream: [
-            { streamType: 1, index: 0, codec: 'h264', height: 1080 }] }] }] };
+            { streamType: 1, index: 0, codec: 'h264', height: 1080 },
+            { streamType: 3, codec: 'srt', key: '/library/streams/12', languageTag: 'en' }] }] }] };
 const episode = { ratingKey: '20', type: 'episode', title: 'Pilot', index: 1, parentIndex: 0, parentRatingKey: '19',
     grandparentRatingKey: '18', grandparentTitle: 'Show', thumb: '/still', grandparentThumb: '/poster', leafCount: 0 };
 
@@ -191,6 +192,9 @@ export function run() {
     }).then(result => {
         check(result.playMethod === 'DirectPlay' && result.url === local + '/library/parts/1001/1/file.mp4'
             && result.variantId === '101', 'the edition asked for plays directly');
+        const sidecar = result.streams.find(s => s.external);
+        check(sidecar && sidecar.url === local + '/library/streams/12' && sidecar.index >= 10000,
+            'a sidecar subtitle comes with its file on the server and an index of its own');
         check(result.headers['X-Plex-Token'] === 'server-token' && result.url.indexOf('server-token') < 0,
             'the token travels in a header');
         check(result.segments.length === 2 && result.segments[0].type === 'Intro' && result.segments[0].startTicks === '10000000'

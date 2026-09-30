@@ -656,6 +656,16 @@ export function createSource(configuration, sourceHost) {
                     parameters['X-Plex-Client-Profile-Extra'] =
                         'add-limitation(scope=videoCodec&scopeName=h264&type=upperBound&name=video.height&value='
                         + plan.height + '&isRequired=true)';
+                // Sidecar subtitles have no index in the file: number them past
+                // any it could have, and give mpv the file to fetch.
+                let sidecars = 0;
+                const mapStream = rawStream => {
+                    const mapped = stream(rawStream);
+                    if (!mapped.external)
+                        return mapped;
+                    return Object.assign(mapped, { index: 10000 + sidecars++,
+                        url: /^\/library\/streams\/\d+/.test(String(rawStream.key)) ? server + rawStream.key : undefined });
+                };
                 function resolved(outputPart, method) {
                     sessions[session] = { duration: raw.duration || selected.duration, partId: part.id, endpoint: endpoint };
                     return {
@@ -664,7 +674,7 @@ export function createSource(configuration, sourceHost) {
                             'X-Plex-Session-Identifier': session },
                         variantId: String(selected.id), playSessionId: session, playMethod: method,
                         container: method === 'DirectPlay' ? selected.container || '' : 'mpegts',
-                        streams: (outputPart.Stream || []).map(stream).filter(s => s.type), segments: segments(raw)
+                        streams: (outputPart.Stream || []).map(mapStream).filter(s => s.type), segments: segments(raw)
                     };
                 }
                 if (plan.direct)
