@@ -85,6 +85,17 @@ export function connections(list) {
     return result;
 }
 
+// An address the viewer typed for their server, such as a custom access URL
+// plex.tv does not advertise. A bare host name is taken to mean HTTPS.
+export function customAddress(text) {
+    let value = String(text || '').trim().replace(/\/+$/, '');
+    if (!value)
+        return '';
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value))
+        value = 'https://' + value;
+    return /^https?:\/\/[^\s/?#@]+$/i.test(value) ? value : '';
+}
+
 export function createSource(configuration, sourceHost) {
     const device = sourceHost.device || {};
     let token = configuration.token || '';
@@ -335,7 +346,9 @@ export function createSource(configuration, sourceHost) {
             studio: args.studio, year: (filters.years || []).join(','),
             contentRating: (filters.officialRatings || []).join(','),
             unwatched: status.indexOf('IsUnplayed') >= 0 ? 1 : status.indexOf('IsPlayed') >= 0 ? 0 : undefined,
-            inProgress: status.indexOf('IsResumable') >= 0 ? 1 : undefined
+            inProgress: status.indexOf('IsResumable') >= 0 ? 1 : undefined,
+            resolution: filters.is4K ? '4k' : undefined,
+            hdr: filters.isHdr ? 1 : undefined
         };
         const genres = (filters.genres || []).concat(args.genre ? [args.genre] : []);
         if (genres.length === 0)
@@ -391,10 +404,23 @@ export function createSource(configuration, sourceHost) {
         }),
         // The authenticated root both verifies the token and checks that an
         // advertised address still belongs to the selected server.
+        // Which server answers at a typed address. Plex serves its identity
+        // without a token, so this names the server before trusting it.
+        identify: (args, host) => {
+            const address = customAddress(args.address);
+            if (!address)
+                throw new Error('invalid_address');
+            return host.http(address + '/identity', { headers: headers(device) }).then(parse)
+                .then(result => ({ address: address, id: String(container(result).machineIdentifier || '') }));
+        },
         connect: (args, host) => {
             const target = args.server || {};
             const user = args.user || {};
-            const candidates = target.connections || [];
+            // A typed address is tried first and kept with the advertised ones;
+            // like them, it must prove it is the chosen server below.
+            const typed = customAddress(args.address);
+            const candidates = (typed ? [{ uri: typed, local: false }] : [])
+                .concat((target.connections || []).filter(c => c.uri !== typed));
             const reachable = c => Promise.race([
                 host.http(c.uri + '/', { headers: headers(device, target.token) }).then(parse)
                     .then(result => container(result).machineIdentifier === target.id, () => false),
@@ -574,9 +600,13 @@ export function createSource(configuration, sourceHost) {
                 return {};
             const titles = path => request(host, 'GET', '/library/sections/' + key + path)
                 .then(result => (container(result).Directory || []).map(d => String(d.title)), () => []);
+            // The filters Plex answers; Spool offers only these. Resolution and
+            // HDR belong to a movie's media, not to a show as a whole.
+            const supported = ['filters:IsPlayed', 'filters:IsUnplayed', 'filters:IsResumable', 'genres', 'years',
+                'officialRatings'].concat(args.collectionType === 'movies' ? ['is4K', 'isHdr'] : []);
             return Promise.all([titles('/genre'), titles('/year'), titles('/contentRating')])
                 .then(([genres, years, ratings]) => ({ genres: genres, years: years.map(Number).filter(Number.isInteger),
-                    officialRatings: ratings }));
+                    officialRatings: ratings, supported: supported }));
         },
 
         resolve: (args, host) => {
@@ -821,7 +851,7 @@ export function createSource(configuration, sourceHost) {
             return {};
         }
     };
-    for (const name of ['pinStart', 'pinPoll', 'homeSelect', 'connect']) {
+    for (const name of ['pinStart', 'pinPoll', 'homeSelect', 'identify', 'connect']) {
         const operation = source[name];
         source[name] = (args, host) => {
             if (configuration.server || stopped) throw new Error('action_unavailable');
@@ -830,7 +860,8 @@ export function createSource(configuration, sourceHost) {
     }
     // Defense in depth: even custom baseline operations cannot use saved
     // credentials while a prepared Home source is private/locked.
-    const utilities = ['describe', 'extensionStatus', 'activate', 'signOut', 'pinStart', 'pinPoll', 'homeSelect', 'connect'];
+    const utilities = ['describe', 'extensionStatus', 'activate', 'signOut', 'pinStart', 'pinPoll', 'homeSelect',
+        'identify', 'connect'];
     for (const name of Object.keys(source)) {
         if (utilities.includes(name)) continue;
         const operation = source[name];

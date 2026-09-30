@@ -127,6 +127,16 @@ function authenticate() {
     return source.connect({ user: { id: 'u', name: 'User' }, server: { id: 'machine', token: 'secret',
         connections: [{ uri: other }, { uri: origin }] } }, host).then(account => {
         check(account.configuration.server === origin, 'a different Plex server at an old IP is rejected');
+        return source.connect({ user: { id: 'u' }, address: 'plex.example.com/', server: { id: 'machine',
+            token: 'secret', connections: [{ uri: origin }] } }, host);
+    }).then(account => {
+        check(account.configuration.server === 'https://plex.example.com'
+            && account.configuration.connections.length === 2,
+            'a typed custom address is tried first as HTTPS and kept beside the advertised ones');
+        return source.connect({ user: { id: 'u' }, address: other, server: { id: 'machine', token: 'secret',
+            connections: [{ uri: origin }] } }, host);
+    }).then(account => {
+        check(account.configuration.server === origin, 'a typed address answering as another server is refused');
         return fails(() => source.connect({ server: { id: 'machine', token: 'expired',
             connections: [{ uri: origin }] } }, { http: () => response({}, 401), delay: host.delay }), 'server_unreachable');
     });
