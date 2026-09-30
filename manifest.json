@@ -3,7 +3,7 @@
   "api": "0.2",
   "id": "spool.plex",
   "name": "Plex",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "Spool",
   "summary": "Your Plex Media Server",
   "homepage": "https://github.com/spool-player/spool-plex",
