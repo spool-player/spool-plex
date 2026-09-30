@@ -154,12 +154,14 @@ export function run() {
             && show.seriesPosterTag === '/poster' && show.thumbTag === '/still', 'episode shape, season zero kept');
         step = 'browse';
         return source.browse({ parentId: 'section:1', collectionType: 'movies', limit: 1, sortBy: 'DateCreated',
-            sortOrder: 'Descending', filters: { genres: ['Drama'], filters: ['IsUnplayed'], years: ['2020'] } }, pms.host);
+            sortOrder: 'Descending', filters: { genres: ['Drama'], filters: ['IsUnplayed'], years: ['2020'],
+                is4K: true, isHdr: true } }, pms.host);
     }).then(page => {
         const url = pms.calls[pms.calls.length - 1].url;
         check(page.total === 3 && page.cursor === '1' && !page.exhausted, 'paging from totalSize');
         check(url.indexOf('genre=55') > 0 && url.indexOf('unwatched=1') > 0 && url.indexOf('year=2020') > 0
             && url.indexOf('sort=addedAt%3Adesc') > 0 && url.indexOf('type=1') > 0, 'filters and sort');
+        check(url.indexOf('resolution=4k') > 0 && url.indexOf('hdr=1') > 0, '4K and HDR filters reach Plex');
         check(url.indexOf('X-Plex-Container-Start=0') > 0 && url.indexOf('X-Plex-Container-Size=1') > 0, 'page window');
         return source.browse({ parentId: 'section:1', limit: 5, filters: { genres: ['Western'] } }, pms.host);
     }).then(() => {
