@@ -8,13 +8,17 @@ FocusScope {
 
     property var provider
     property bool homeSupported: false
-    property var home: ({})
+    property var home: ({
+                            available: false,
+                            writable: false,
+                            automaticSignIn: false
+                        })
     property bool busy: false
     property string error: ""
     readonly property bool automaticSignIn: {
         const options = provider ? provider.activationConfiguration : null
-        return options && typeof options.homeAutomaticSignIn === "boolean"
-            ? options.homeAutomaticSignIn : Boolean(home.automaticSignIn)
+        return options && typeof options.homeAutomaticSignIn === "boolean" ? options.homeAutomaticSignIn : Boolean(
+                                                                                 home.automaticSignIn)
     }
 
     function loadHome() {
@@ -30,13 +34,15 @@ FocusScope {
             return
         busy = true
         error = ""
-        provider.request("homeAutomaticSignIn", { "enabled": !root.automaticSignIn }).then(() => {
-            busy = false
-            loadHome()
-        }, () => {
-            busy = false
-            error = "Couldn't change automatic sign-in."
-        })
+        provider.request("homeAutomaticSignIn", {
+                             "enabled": !root.automaticSignIn
+                         }).then(() => {
+                             busy = false
+                             loadHome()
+                         }, () => {
+                             busy = false
+                             error = "Couldn't change automatic sign-in."
+                         })
     }
 
     Component.onCompleted: {
@@ -56,7 +62,7 @@ FocusScope {
             font.weight: Font.DemiBold
         }
 
-        CompatibilityNotice {
+        ProviderCompatibilityNotice {
             Layout.fillWidth: true
             provider: root.provider
         }
@@ -70,8 +76,8 @@ FocusScope {
             Layout.fillWidth: true
             visible: root.homeSupported
             text: root.home.available
-                  ? "Plex Home protects this Home, not unrelated accounts signed in to Spool. Automatic sign-in is local to this device and skips only the last-used user's startup PIN. Switching protected users still requires their PIN."
-                  : "To use Plex Home, add an account and link it at plex.tv/link. Existing server-only accounts keep ordinary playback."
+                  ? "Plex Home protects this Home, not unrelated accounts signed in to Spool. Automatic sign-in is local to this device and skips only the last-used user's startup PIN. Switching protected users still requires their PIN." :
+                    "To use Plex Home, add an account and link it at plex.tv/link. Existing server-only accounts keep ordinary playback."
             wrapMode: Text.WordWrap
         }
 
@@ -97,7 +103,9 @@ FocusScope {
             wrapMode: Text.WordWrap
         }
 
-        Item { Layout.fillHeight: true }
+        Item {
+            Layout.fillHeight: true
+        }
 
         ActionButton {
             id: closeButton

@@ -12,12 +12,17 @@ credits Plex has marked.
 | `logic/items.mjs` | Plex JSON to Spool's item shape; markers to segments |
 | `logic/profile.mjs` | Quality precedence, codec restrictions and Plex transcode parameters |
 | `logic/events.mjs` | The server's notification socket, as change events |
-| `ui/Login.qml` | Link code, Home identity/PIN, then that identity's servers |
-| `ui/Picker.qml` | Activation PIN, playlist/collection destinations, naming/order and delete confirmation |
+| `ui/Login.qml` | Plex linking/Home protocol adapter for Spool's compiled linking surface |
+| `ui/Picker.qml` | Plex PIN labels, collection ordering and Companion command mappings for compiled surfaces |
 | `logic/remote.mjs`, `logic/remote-queue.mjs` | Consent-bound Companion control and exact PMS queue mutations |
 | `logic/xml.mjs` | Bounded, entity-safe XML reader for provider-owned Plex protocols |
 | `logic/home.mjs` | Home XML protocol, credential roles and activation policy |
-| `ui/RemoteControls.qml` | Advertised navigation, focused-field text and delegated item details |
+| `ui/Settings.qml` | Service-specific Plex Home automatic-sign-in policy |
+
+Generic linking, PIN, item-action and advanced remote-control layouts are precompiled
+into Spool. These adapters require the matching host build providing
+`ProviderLinkScreen`, `ProviderActionPicker`, `ProviderRemoteControls` and
+`ProviderCompatibilityNotice`; only Plex-specific flow and policy remain in this package.
 
 Sign-in checks every advertised address with an authenticated server-root request and verifies
 its machine identifier. It selects the first reachable address in preference order: local, remote,
