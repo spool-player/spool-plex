@@ -103,12 +103,12 @@ FocusScope {
         user = result.user
         servers = result.servers || []
         step = "servers"
+        // Even one server is shown rather than chosen: the addresses plex.tv
+        // lists may not work from here, and Enter a server address must stay
+        // reachable before anything is tried.
         if (servers.length === 0)
-            error = "No Plex Media Servers are shared with this account."
-        else if (servers.length === 1)
-            choose(servers[0])
-        else
-            Qt.callLater(() => form.focusChoices())
+            error = "No Plex Media Servers are shared with this account. You can still enter a server address."
+        Qt.callLater(() => form.focusChoices())
     }
 
     function enterAddress() {

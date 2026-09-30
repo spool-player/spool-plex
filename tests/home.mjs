@@ -25,7 +25,8 @@ function fixture() {
             const path = url.replace(/^https?:\/\/[^/]+/, '').split('?')[0];
             const token = options.headers['X-Plex-Token'];
             state.calls.push({ url: url, path: path, options: options });
-            if (state.offline) return Promise.reject(new Error('network_error'));
+            if (state.offline || state.unreachable && url.indexOf(state.unreachable) === 0)
+                return Promise.reject(new Error('network_error'));
             let response;
             if (path === '/api/v2/pins/7') response = json({ authToken: 'full' });
             else if (path === '/api/home/users') {
@@ -160,6 +161,15 @@ function family() {
     }).then(() => {
         const wrong = fixture(); wrong.state.wrongServer = true;
         return fails(() => createSource(config(), wrong.host).activate(args('family', { grant: grant }), wrong.host), 'home_server_identity_mismatch');
+    }).then(() => {
+        const typed = 'https://plex.example.com';
+        const remote = fixture(); remote.state.unreachable = origin;
+        const source = createSource(config({ server: typed, connections: [{ uri: typed }, { uri: origin }] }), remote.host);
+        return source.activate(args('family', { grant: grant }), remote.host).then(() => {
+            check(source.describe().artwork.indexOf(typed) === 0,
+                'a typed address plex.tv does not list still activates when the listed one is unreachable');
+            source.signOut();
+        });
     });
 }
 function automatic() {

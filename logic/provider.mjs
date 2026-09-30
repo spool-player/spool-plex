@@ -190,9 +190,16 @@ export function createSource(configuration, sourceHost) {
         headers: value => headers(device, value), servers: serverResources,
         emit: (event, value) => sourceHost.emit(event, value),
         refreshServer: (host, target, activeToken) => {
-            // Resource refresh does not silently grant newly advertised origins.
+            // Resource refresh does not silently grant newly advertised origins,
+            // and keeps the ones already approved even when plex.tv does not
+            // list them, such as a typed custom access URL. The address that
+            // last answered goes first.
             const approved = [server].concat(known.map(c => c.uri));
-            const candidates = target.connections.filter(c => approved.includes(c.uri));
+            const candidates = [];
+            for (const c of [{ uri: server }].concat(known, target.connections)) {
+                if (c.uri && approved.includes(c.uri) && !candidates.some(seen => seen.uri === c.uri))
+                    candidates.push({ uri: c.uri, local: Boolean(c.local) });
+            }
             function attempt(index) {
                 if (index >= candidates.length) throw new Error('home_server_unavailable');
                 const candidate = candidates[index];
@@ -402,8 +409,6 @@ export function createSource(configuration, sourceHost) {
             return tv(host, 'GET', '/api/v2/user', {}, pin.authToken)
                 .then(user => home.linked(host, user, pin.authToken));
         }),
-        // The authenticated root both verifies the token and checks that an
-        // advertised address still belongs to the selected server.
         // Which server answers at a typed address. Plex serves its identity
         // without a token, so this names the server before trusting it.
         identify: (args, host) => {
@@ -413,6 +418,8 @@ export function createSource(configuration, sourceHost) {
             return host.http(address + '/identity', { headers: headers(device) }).then(parse)
                 .then(result => ({ address: address, id: String(container(result).machineIdentifier || '') }));
         },
+        // The authenticated root both verifies the token and checks that an
+        // advertised address still belongs to the selected server.
         connect: (args, host) => {
             const target = args.server || {};
             const user = args.user || {};
@@ -426,7 +433,10 @@ export function createSource(configuration, sourceHost) {
                     .then(result => container(result).machineIdentifier === target.id, () => false),
                 host.delay(4000).then(() => false)
             ]);
-            return Promise.all(candidates.map(reachable)).then(answers => {
+            // A typed address is asked alone first: the viewer chose it, and the
+            // advertised ones may be addresses that cannot work from here.
+            const first = typed ? reachable(candidates[0]).then(ok => ok ? [true] : null) : Promise.resolve(null);
+            return first.then(answer => answer || Promise.all(candidates.map(reachable))).then(answers => {
                 const chosen = candidates[answers.indexOf(true)];
                 if (!chosen)
                     throw new Error('server_unreachable');
