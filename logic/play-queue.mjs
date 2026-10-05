@@ -57,8 +57,13 @@ export function createPlayQueueReporter(options) {
     function decode(result, previous) {
         const data = box(result);
         const id = text(data.playQueueID);
-        const count = Number(data.playQueueTotalCount);
         const metadata = data.Metadata || [];
+        // PMS omits both TotalCount and Metadata after the last occurrence is
+        // removed. Only its explicit empty window acknowledges that state;
+        // missing counts on a nonempty/truncated window still fail closed.
+        const empty = data.playQueueTotalCount === undefined && (data.size === 0 || data.size === '0')
+            && Array.isArray(metadata) && metadata.length === 0;
+        const count = empty ? 0 : Number(data.playQueueTotalCount);
         if (!/^\d+$/.test(id) || !Number.isInteger(count) || count < 0 || count > maximumItems
                 || !Array.isArray(metadata) || metadata.length !== count)
             fail();

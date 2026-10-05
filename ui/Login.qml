@@ -28,6 +28,8 @@ FocusScope {
                                          "Couldn't reach that server. If it has a custom access URL, choose Enter a server address.",
                                          "network_error": "Couldn't reach Plex. Check your connection and try again.",
                                          "http_401": "Plex rejected the sign-in. Request a new code.",
+                                         "invalid_config": "Saved Plex credentials are incomplete. Request a new code to reconnect.",
+                                         "home_relink_required": "Link your Plex account again. Request a new code.",
                                          "origin_denied": "That server address is not allowed.",
                                          "home_authentication_failed": "Plex rejected that PIN. Try again.",
                                          "home_identity_mismatch":

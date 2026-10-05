@@ -199,6 +199,9 @@ function baselineRepairs() {
         'int64 upper boundary has a safe integer millisecond quotient');
     check(milliseconds('9999') === 0 && milliseconds('10000') === 1, 'sub-millisecond remainder is floored');
     check(ticks(9007199254741) === '90071992547410000', 'incoming milliseconds become exact decimal ticks too');
+    check(ticks(922337203685477) === '9223372036854770000'
+        && ticks(922337203685478) === undefined && ticks(Infinity) === undefined,
+        'optional durations never exceed the native signed64 tick boundary');
     const calls = [];
     const host = { device: { id: 'device' }, http: (url, options) => {
         calls.push({ url: url, options: options });
@@ -211,7 +214,8 @@ function baselineRepairs() {
     const source = createSource({ server: origin, token: 'secret', serverId: 'machine' }, host);
     const decimal = '9007199254749999';
     return source.resolve({ itemId: '1', forceTranscode: true, positionTicks: decimal }, host).then(result => {
-        check(parameter(result.url, 'offset') === '900719925', 'resolve uses exact milliseconds before converting to seconds');
+        check(parameter(result.url, 'offset') === '900719925.474'
+            && result.timelineOriginTicks === '9007199254740000', 'resolve retains millisecond server offset and exact source origin');
         return ['start', 'progress', 'stop'].reduce((pending, event) => pending.then(() =>
             source.report({ event: event, itemId: '1', positionTicks: decimal }, host).then(() => {
                 check(parameter(calls[calls.length - 1].url, 'time') === '900719925474',

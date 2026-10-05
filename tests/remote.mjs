@@ -23,16 +23,16 @@ function fixture(configuration, offered) {
     const granted = new Set([server, 'https://plex.tv']);
     const state = { status: 'playing', machine: 'pms', media: '10', type: 'video', entry: '1', queue: '7', version: 1,
         time: '1250', duration: '90000', controls: 'playPause,stop,seekTo,skipNext,skipPrevious,volume,repeat,shuffle,audioStream,subtitleStream,skipTo',
-        capabilities: 'timeline,playback,navigation,mirror,playqueues', ack: 0, identity: 'peer', textField: 'search',
+        capabilities: 'timeline,playback,navigation,mirror,playqueues', ack: 0, identity: 'peer', textField: 'search', mediaIndex: 0,
         fieldSecure: false, held: null, holdNext: false, unauthorized: false, denyDelegation: false, rejectBulk: false,
         loseMutation: false, uncertainAppend: false, appliedLostAppend: false, nextEntry: 10, nextQueue: 8, streams: {},
         queues: { '7': [{ id: '1', itemId: '10' }, { id: '2', itemId: '10' }, { id: '3', itemId: '11' }] } };
     const raw = id => ({ ratingKey: id, key: '/library/metadata/' + id, type: Number(id) >= 1000 ? 'track' : 'movie',
         title: 'Item ' + id, librarySectionID: 1, librarySectionUUID: 'library-uuid', duration: 90000,
-        Media: [{ id: 'variant-a', Part: [{ id: 1, Stream: [
+        Media: [{ id: 'variant-a', Part: [{ id: 1, indexes: 'sd', Stream: [
             { id: 901, index: 1, streamType: 2, selected: 1, displayTitle: 'Audio' },
             { id: 904, index: 4, streamType: 3, selected: 1, displayTitle: 'Subtitles' }] }] },
-        { id: 'variant-b', Part: [{ id: 2, Stream: [] }] }] });
+        { id: 'variant-b', Part: [{ id: 2, indexes: 'hd', Stream: [] }] }] });
     const respond = (body, status, headers) => Promise.resolve({ status: status || 200,
         body: typeof body === 'string' ? body : JSON.stringify(body), headers: headers || {} });
     const queue = id => ({ MediaContainer: { playQueueID: id, playQueueTotalCount: state.queues[id].length,
@@ -43,7 +43,8 @@ function fixture(configuration, offered) {
         + '" state="' + state.status + '" machineIdentifier="' + state.machine + '" ratingKey="' + state.media
         + '" time="' + state.time + '" duration="' + state.duration + '" playQueueID="' + state.queue
         + '" playQueueVersion="' + state.version + '" playQueueItemID="' + state.entry
-        + '" controllable="' + state.controls + '" mediaIndex="0" subtitleStreamID="904" audioStreamID="901"/></MediaContainer>';
+        + '" controllable="' + state.controls + '" mediaIndex="' + state.mediaIndex
+        + '" subtitleStreamID="904" audioStreamID="901"/></MediaContainer>';
     const host = { device: { id: 'self', name: 'Spool fixture' }, extensions: offered || extensions, emit: () => {},
         http: (url, options) => {
             const base = /^(https?:\/\/[^/]+)/.exec(url)[1];
@@ -178,6 +179,21 @@ export function run() {
         check(snapshot.audioTracks[0].id === '901' && snapshot.subtitleTracks[0].id === '904'
             && snapshot.commands.indexOf('mute') < 0, 'stream IDs, not indexes; no simulated mute');
         check(!f.calls.some(call => call.path === '/player/playback/playMedia' || call.method === 'POST'), 'selection never starts playback');
+        check(snapshot.preview.format === 'bif'
+            && snapshot.preview.url === server + '/library/parts/1/indexes/sd?interval=10000'
+            && snapshot.preview.headers['X-Plex-Token'] === 'pms-token', 'remote BIF binds the timeline-selected part on this PMS');
+        f.state.mediaIndex = 1;
+        return readState();
+    }).then(snapshot => {
+        check(snapshot.preview.url === server + '/library/parts/2/indexes/hd?interval=10000',
+            'a timeline variant change selects its own BIF without reusing the previous part');
+        f.state.mediaIndex = 99;
+        return readState();
+    }).then(snapshot => {
+        check(snapshot.preview === undefined, 'an unknown remote variant cannot borrow an index');
+        f.state.mediaIndex = 0;
+        return readState();
+    }).then(() => {
         return invoke({ action: 'subtitleTrack', trackId: null });
     }).then(() => {
         check(f.state.streams.subtitleStreamID === '0', 'subtitle Off is native stream zero');

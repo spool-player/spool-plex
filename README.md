@@ -32,6 +32,31 @@ switch to another saved address and reconnect the notification socket; mutations
 retried, and authorization errors do not silently switch servers. Each Plex user of a server is its own Spool account. Failed sign-ins can
 be retried, expired link codes are renewed, and server lists scroll for accounts with many servers.
 
+Plex decimal-string frame rates and ratings are normalized to finite numbers
+before returning media metadata. Missing file-track indexes use Spool's `-1`
+analysis sentinel; library summaries and sidecar subtitles must not invent a
+file track. Exact decimal file sizes are retained through the signed-64-bit
+boundary, while unsafe numeric sizes and out-of-range durations remain unknown.
+
+### Seek previews
+
+The selected original media part's comma-separated `indexes` advertisement
+controls preview availability. `hd` is preferred, with `sd` as the available
+fallback; unknown or missing keys do not invent an index. Playback results carry
+`{format: 'bif', url, headers}` pointing to
+`/library/parts/{partId}/indexes/{hd|sd}?interval=10000`, even when playback is
+transcoded. Spool decodes and caches the whole BIF sequence natively, rather than
+requesting an image for every hover position. Missing or failed indexes leave
+previews unavailable without failing playback.
+
+This follows Plex's own
+[`PlexPart.getIndexPath/getIndexUrl`](https://github.com/plexinc/plex-for-kodi/blob/master/lib/_included_packages/plexnet/plexpart.py)
+and
+[`PlexPlayer` BIF selection](https://github.com/plexinc/plex-for-kodi/blob/master/lib/_included_packages/plexnet/plexplayer.py).
+URLs remain on the owning PMS connection and contain no token;
+`X-Plex-Token` stays in account-scoped headers and is never sent to a Companion peer.
+
+
 ### Plex Home and device sign-in
 
 With `spool.account-activation` version 1, linking first lists Plex Home users.
@@ -50,6 +75,12 @@ credential. No missing member credential falls back to the linked full identity.
 Existing PMS-only accounts retain playback and PMS `/clients` discovery; add
 and link an account normally to enable Home/cloud discovery. PINs are transient
 form bodies, never saved configuration, URLs, logs or grants.
+
+Saved server-only accounts verify their PMS credential and machine identity
+before activation. Missing stored credentials and rejected linked/Home-account
+authentication prompt reconnect rather than publishing a successful activation.
+An incorrect Home PIN remains a retryable PIN error, not a reason to discard
+credentials; failed authentication never overwrites the saved tokens.
 
 Protected-user switches require authentication. Startup asks for the last-used
 protected user's PIN unless **Automatic sign-in** is enabled for this Home on
@@ -87,10 +118,16 @@ The selected media edition is retained. Bitrate precedence is:
 
 The explicit height selection overrides the standing height preference. Neither is bypassed by
 unlimited LAN mode. Media with missing bitrate or required height analysis is negotiated rather
-than assumed to fit. Direct play uses the original authenticated media-part URL. Remux preference
-uses Plex's HLS transcoder with copying permitted only when the original satisfies quality and
-codec requirements. Exceeding either ceiling, a restricted source codec, or force-transcode
-disables copying. Plex bitrate parameters are rounded down to whole kbit/s.
+than assumed to fit. Direct play uses the original authenticated media-part URL
+with `download=1`, preserving any other part-query parameters. This is the same
+file, read with normal HTTP Range streaming; it neither downloads a local copy
+nor re-encodes the media. On the tested shared server, raw part URLs returned
+HTTP 500, while the same URLs with `download=1` returned exact HTTP 206 ranges.
+Remux preference uses Plex's HLS transcoder only when the original satisfies
+quality and codec requirements and Plex agrees to copy the video. If its client
+profile would re-encode that compatible original instead, Spool plays the original.
+Exceeding either ceiling, a restricted source codec, or force-transcode disables
+copying. Plex bitrate parameters are rounded down to whole kbit/s.
 
 Video negotiation calls Plex's universal decision endpoint before returning an HLS URL. Rejected
 decisions and reported output exceeding the chosen ceilings fail instead of silently playing the
@@ -100,8 +137,41 @@ The returned stream metadata describes the negotiated output. Music uses its ori
 possible and Plex's music HLS endpoint when bitrate reduction or force-transcode is requested.
 Transcoding requires server permission and any applicable Plex entitlement.
 
+Spool passes Plex's server resource token, client identifier and session
+identifier as separate HTTP headers to mpv, including for shared servers
+discovered through Plex. A newline-delimited provider header block must not be
+passed through mpv's comma-delimited string-option parser: doing so sends one
+malformed field to libcurl. A live shared-server reproduction returned HTTP 400
+and mpv loading error -13 with that malformed field; the identical provider URL
+with typed individual mpv headers loaded and played. The universal transcode
+request and discovered account credential/address did not need a fallback or
+parameter rewrite.
+
 Timeline reports include the known duration and media part, so Plex can update resume/watched
 state. Stopping releases remux/transcode sessions even if the final timeline report fails.
+Timeline and transcoder cleanup acknowledgments are retained separately during
+report retries. A cleanup HTTP 404 means already released only for the exact
+known session/item whose playback start was acknowledged; unknown-session
+404s and timeline failures remain errors. Plex can release a transcoder when
+mpv unloads, before the final stop request reaches it.
+
+HLS resume passes the full millisecond position to Plex as a fractional-second
+`offset`. `timelineOriginTicks` records the corresponding source position at
+normalized media zero. Spool does not issue the same resume seek again in mpv;
+positions, chapters, reports and preview markers stay in source coordinates.
+A live 43.7-second resume incurred roughly 31 seconds between file loading and
+playback restart when mpv sought again. The server's full 43.7-second offset
+with no initial mpv seek restarted in about 1.65 seconds total. Seeking before
+that origin resolves a fresh stream.
+
+Preview availability comes from the selected original part's advertised
+`indexes` (`hd` preferred to `sd`), requested with `includeIndexes=1`.
+Enabling preview thumbnails in Plex does not guarantee that each selected part
+advertises an index to the current viewing account. When metadata omits indexes
+and the corresponding BIF and Web thumbnail routes return HTTP 404, Spool leaves
+previews unavailable. Compare the exact server, viewing account and media part
+with the Web player before attributing this to generation or access settings;
+no synthetic preview URLs or placeholder images are substituted.
 Outgoing decimal tick positions are validated as nonnegative signed-64-bit values
 and divided by 10,000 before numeric conversion, flooring sub-millisecond remainders.
 Malformed or out-of-range positions fail before any playback request.
@@ -166,7 +236,11 @@ matching revision is verified. Duplicate occurrences remain distinct; membership
 reuse the existing server queue. A mixed audio/video queue reports a nonfatal unavailable status
 instead of pretending one PMS queue can represent it. The implementation verifies append results
 and reconciles uncertain mutations before further changes; no saved playlist is used as a surrogate.
-Protocol fixtures cover these contracts; live PMS behavior still requires server-specific validation.
+PMS omits `playQueueTotalCount` and `Metadata` from an emptied queue; an explicit `size=0`
+readback acknowledges that state so replacing the last movie can append its successor to the
+same queue. Missing counts on nonempty windows still fail closed. Isolated live PMS requests
+confirmed ordered duplicate creation, Up Next insertion and this empty/repopulate transition;
+protocol fixtures also cover stale generations and uncertain mutations.
 
 ### Outbound Plex Companion
 
@@ -186,8 +260,9 @@ checked. Target authorization failures do not expire the PMS account.
 Transport and stream controls follow the peer's advertised capabilities. Stream IDs
 are Plex IDs, subtitle Off uses zero, unknown volume/duration remain absent, and mute
 is not simulated by setting volume to zero. Media on a different PMS retains transport
-controls but cannot expose this account's metadata, tracks or queue edits. Plex does
-not advertise remote thumbnail previews.
+controls but cannot expose this account's metadata, tracks, previews or queue edits.
+Available remote BIF previews bind the timeline's exact media variant and single
+original part. Unknown variants and multipart timelines do not borrow another index.
 
 Starting media and showing details obtain a fresh PMS delegation token. No full-account,
 Home-member, resource-discovery or long-lived PMS token is sent to the peer. Unsupported

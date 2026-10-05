@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
+import { finiteNumber } from './items.mjs';
+
 // Match Spool's first-party quality precedence, then express it in Plex's units.
 export function maxBitrate(context, local) {
     return context.maxBitrate || (context.unlimitedLocalNetwork && local ? 1000000000 : 0)
@@ -13,8 +15,8 @@ export function playbackPlan(media, context, local, isVideo = true) {
     const part = (media.Part || [])[0] || {};
     const video = (part.Stream || []).find(s => s.streamType === 1);
     const codec = String((video && video.codec) || media.videoCodec || '').toLowerCase();
-    const height = Number((video && video.height) || media.height) || 0;
-    const bitrate = Number(media.bitrate) * 1000;
+    const height = finiteNumber((video && video.height) || media.height);
+    const bitrate = finiteNumber(Number(media.bitrate) * 1000);
     const ceiling = maxBitrate(context, local);
     const heightLimit = maxHeight(context);
     const codecs = (context.videoCodecs || []).map(c => String(c).trim().toLowerCase());
@@ -25,12 +27,13 @@ export function playbackPlan(media, context, local, isVideo = true) {
     if (transcode && isVideo && context.restrictVideoCodecs && codecs.indexOf('h264') < 0)
         throw new Error('unsupported_transcode_codec');
     const resolutionHeight = heightLimit && height ? Math.min(heightLimit, height) : heightLimit || height;
-    const width = Number((video && video.width) || media.width) || 0;
+    const width = finiteNumber((video && video.width) || media.width);
     const resolutionWidth = width && height ? Math.floor(width * resolutionHeight / height / 2) * 2
         : Math.floor(resolutionHeight * 16 / 9 / 2) * 2;
     return {
         ceiling: ceiling, height: heightLimit, isVideo: isVideo,
-        direct: !transcode && (!isVideo || !context.preferRemux),
+        source: { bitrate: bitrate || 0, width: width, height: height },
+        direct: !transcode && (!isVideo || !context.preferRemux || context.maxBitrate >= 1000000000),
         // Copying an over-limit or unsupported video would silently ignore the choice.
         directStream: transcode ? 0 : 1,
         bitrateKbps: Math.floor(ceiling / 1000),

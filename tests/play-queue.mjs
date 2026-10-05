@@ -25,8 +25,17 @@ function fixture(settings) {
     let maximumInFlight = 0;
     let held = null;
     let hold = null;
-    const result = () => ({ MediaContainer: { playQueueID: '7', playQueueTotalCount: rows.length,
-        Metadata: rows.map(row => Object.assign({}, row)) } });
+    const result = () => {
+        const data = { playQueueID: '7', size: rows.length };
+        // Actual PMS empty readback omits count and Metadata, rather than
+        // returning the zero/empty-array values the old fixture invented.
+        if (rows.length) {
+            if (!config.omitTotalCount) data.playQueueTotalCount = rows.length;
+            data.Metadata = rows.map(row => Object.assign({}, row));
+        }
+        if (config.zeroWindowSize) data.size = 0;
+        return { MediaContainer: data };
+    };
     const add = ids => ids.map(id => ({ ratingKey: id, playQueueItemID: String(++serial) }));
     const parseIds = uri => uri.indexOf('library:///directory/') === 0
         ? decodeURIComponent(uri.slice('library:///directory/'.length)).slice('/library/metadata/'.length).split(',')
@@ -151,6 +160,17 @@ function deltas() {
     }).then(state => {
         check(state === 'ready' && f.rows().length === 0, 'empty revision removes all entries');
         check(f.maximumInFlight() <= 2, 'requests remain bounded');
+        return f.update(snapshot('single', [4]));
+    }).then(state => {
+        check(state === 'ready' && f.reporter.timeline('4').playQueueItemID === f.rows()[0].playQueueItemID,
+            'an acknowledged empty PMS queue can be populated again');
+        return f.update(snapshot('replacement', [5]));
+    }).then(state => {
+        check(state === 'ready' && f.rows().length === 1 && f.rows()[0].ratingKey === '5'
+            && f.reporter.timeline('5').playQueueItemID === f.rows()[0].playQueueItemID,
+            'switching singleton movies reconciles through the real empty PMS response');
+        check(f.calls.filter(call => call.method === 'POST').length === 1,
+            'singleton replacement preserves the source queue rather than creating another');
     });
 }
 function fallback() {
@@ -226,6 +246,24 @@ function cancellation() {
         check(state === 'ready' && f.reporter.timeline('3').playQueueID === '7', 'restart reuses and reads back the source queue');
         check(!f.events.some(event => event.revision === 'stopped' && event.state === 'ready'), 'stop fences late completion');
         check(f.maximumInFlight() <= 2, 'coalescing never starts overlapping mutation jobs');
+        const firstId = f.rows()[0].playQueueItemID;
+        const heldRemoval = f.hold((method, path) => method === 'DELETE'
+            && path === '/playQueues/7/items/' + firstId);
+        f.update(snapshot('discarded-empty', []));
+        return heldRemoval;
+    }).then(release => {
+        const completed = f.update(snapshot('after-empty', [4, 4], ['first', 'second']), 1);
+        release();
+        return completed;
+    }).then(state => {
+        check(state === 'ready' && f.rows().map(row => row.ratingKey).join(',') === '4,4',
+            'successor reads an empty queue left by a stale final removal');
+        check(f.reporter.timeline('4').playQueueItemID === f.rows()[1].playQueueItemID,
+            'successor publishes the selected new duplicate occurrence');
+        check(!f.events.some(event => event.revision === 'discarded-empty' && event.state === 'ready'),
+            'an empty readback never publishes a stale generation');
+        check(f.calls.filter(call => call.method === 'POST').length === 1,
+            'stale removal reuses the acknowledged queue');
     });
 }
 function limitations() {
@@ -244,6 +282,15 @@ function limitations() {
         return wrong.update(snapshot('wrong-occurrence', [1, 1])).then(state => {
             check(state === 'unavailable', 'duplicate PMS occurrence IDs cannot represent duplicate local entries');
         });
+    }).then(() => {
+        return [{ omitTotalCount: true }, { omitTotalCount: true, zeroWindowSize: true }]
+            .reduce((pending, config, index) => pending.then(() => {
+                const incomplete = fixture(config);
+                return incomplete.update(snapshot('missing-count-' + index, [1])).then(state => {
+                    check(state === 'unavailable' && !incomplete.reporter.timeline('1').playQueueID,
+                        'missing count never acknowledges a nonempty or inconsistent window');
+                });
+            }), Promise.resolve());
     });
 }
 export function run() {

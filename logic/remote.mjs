@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Outbound Companion only. Never feeds inbound Events.remote or local reporting.
 import { parseXml } from './xml.mjs';
-import { container, item, milliseconds, ticks } from './items.mjs';
+import { container, item, milliseconds, ticks, trickplay } from './items.mjs';
 import { createRemoteQueues } from './remote-queue.mjs';
 const dependencies = ['spool.remote-targets', 'spool.http-metadata', 'spool.origin-grants'];
 const navigation = { moveUp: 'Up', moveDown: 'Down', moveLeft: 'Left', moveRight: 'Right', select: 'Select',
@@ -141,6 +141,26 @@ export function createRemote(options) {
             .slice(0, 128).map(raw => ({ id: text(raw.id), label: raw.extendedDisplayTitle || raw.displayTitle || raw.title
                 || raw.language || text(raw.id), selected: selectedId ? selectedId === text(raw.id) : Boolean(Number(raw.selected)) }));
     }
+    function preview(peer) {
+        const timeline = peer.timeline;
+        if (timeline.type !== 'video')
+            return undefined;
+        const sources = peer.raw.Media || [];
+        const mediaIndex = integer(timeline.mediaIndex, 0, 10000);
+        const media = text(timeline.mediaId) ? sources.find(raw => text(raw.id) === text(timeline.mediaId))
+            : mediaIndex !== undefined ? sources[mediaIndex] : sources.length === 1 ? sources[0] : undefined;
+        const parts = media && media.Part || [];
+        // A whole-item timestamp cannot address a later multipart BIF without
+        // a documented part offset. Do not show a different part's images.
+        if (parts.length !== 1)
+            return undefined;
+        const part = parts[0];
+        const partId = text(timeline.partID || timeline.partId);
+        const partIndex = integer(timeline.partIndex, 0, 10000);
+        if (partId && text(part.id) !== partId || partIndex !== undefined && partIndex !== 0)
+            return undefined;
+        return trickplay(part, options.server(), { 'X-Plex-Token': options.token });
+    }
     function state(peer) {
         const raw = peer.timeline || {};
         const result = { state: ['playing', 'paused', 'buffering', 'error'].indexOf(raw.state) >= 0 ? raw.state : 'stopped',
@@ -158,6 +178,7 @@ export function createRemote(options) {
                 result.item = item(peer.raw);
                 result.audioTracks = tracks(peer, 2);
                 result.subtitleTracks = tracks(peer, 3);
+                result.preview = preview(peer);
             }
             if (queueId(peer) && raw.playQueueVersion !== undefined)
                 result.queueRevision = queueId(peer) + ':' + raw.playQueueVersion;

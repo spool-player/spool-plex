@@ -57,18 +57,18 @@ function server(routes, down) {
 const local = 'https://10-0-0-2.abc.plex.direct:32400';
 const remote = 'https://203-0-113-9.abc.plex.direct:32400';
 const film = { ratingKey: '10', key: '/library/metadata/10', type: 'movie', title: 'Film', titleSort: 'Film', year: 2020,
-    duration: 7200000, viewOffset: 60000, viewCount: 0, userRating: 10, librarySectionID: 1,
+    duration: 7200000, viewOffset: 60000, viewCount: 0, userRating: 10, audienceRating: '8.5', librarySectionID: 1,
     Guid: [{ id: 'imdb://tt1' }, { id: 'tmdb://42' }], Genre: [{ tag: 'Drama' }], Role: [{ id: 7, tag: 'Ann', role: 'Lead' }],
     Marker: [{ type: 'intro', startTimeOffset: 1000, endTimeOffset: 31000 }, { type: 'credits', startTimeOffset: 7000000,
         endTimeOffset: 7200000 }, { type: 'unknown' }],
-    Media: [{ id: 100, videoResolution: '4k', bitrate: 40000, container: 'mkv', Part: [{ id: 1000,
+    Media: [{ id: 100, videoResolution: '4k', bitrate: 40000, container: 'mkv', Part: [{ id: 1000, indexes: 'sd',
         key: '/library/parts/1000/1/file.mkv', file: '/srv/private/Film.mkv', size: 9007199254740993, Stream: [
-            { streamType: 1, index: 0, codec: 'hevc', height: 2160, DOVIPresent: true },
+            { streamType: 1, index: 0, codec: 'hevc', height: 2160, frameRate: '23.976', DOVIPresent: true },
             { streamType: 2, index: 1, codec: 'eac3', channels: 6, languageCode: 'eng' },
             { streamType: 3, codec: 'srt', key: '/library/streams/9' }] }] },
-    { id: 101, videoResolution: '1080', bitrate: 8000, container: 'mp4', Part: [{ id: 1001,
-        key: '/library/parts/1001/1/file.mp4', file: 'D:\\media\\Film.mp4', Stream: [
-            { streamType: 1, index: 0, codec: 'h264', height: 1080 },
+    { id: 101, videoResolution: '1080', bitrate: 8000, container: 'mp4', Part: [{ id: 1001, indexes: 'sd,hd',
+        key: '/library/parts/1001/1/file.mp4', file: 'D:\\media\\Film.mp4', size: '9007199254740993', Stream: [
+            { streamType: 1, index: 0, codec: 'h264', height: 1080, frameRate: '23.976' },
             { streamType: 3, codec: 'srt', key: '/library/streams/12', languageTag: 'en' }] }] }] };
 const episode = { ratingKey: '20', type: 'episode', title: 'Pilot', index: 1, parentIndex: 0, parentRatingKey: '19',
     grandparentRatingKey: '18', grandparentTitle: 'Show', thumb: '/still', grandparentThumb: '/poster', leafCount: 0 };
@@ -139,6 +139,109 @@ function extensionCompatibility() {
             'unsupported calls cannot inspect libraries or start native probes'));
 }
 
+function previewContracts() {
+    step = 'Plex advertised index boundaries';
+    let indexes;
+    const raw = { ratingKey: 'preview', type: 'movie', Media: [{ id: 1, container: 'mp4', bitrate: 8000,
+        Part: [{ id: 2, key: '/library/parts/2/file.mp4', Stream: [{ streamType: 1, codec: 'h264', height: 720 }] }] }] };
+    const fixture = server({
+        ['GET ' + local + '/library/metadata/preview']: () => {
+            raw.Media[0].Part[0].indexes = indexes;
+            return respond({ MediaContainer: { Metadata: [raw] } });
+        }
+    });
+    const source = createSource({ server: local, token: 'preview-token', serverId: 'machine' }, { device: device });
+    let pending = Promise.resolve();
+    for (const value of [undefined, '', 'unsupported', 'sds', ['sd']]) {
+        pending = pending.then(() => {
+            indexes = value;
+            return source.resolve({ itemId: 'preview', positionTicks: '0' }, fixture.host);
+        }).then(result => check(result.trickplay === undefined && result.playMethod === 'DirectPlay',
+            'missing, malformed, or unknown advertised indexes do not invent BIF availability'));
+    }
+    for (const [value, expected] of [['23.976', 23.976], ['Infinity', 0], ['NaN', 0], [null, 0], [-1, 0]]) {
+        pending = pending.then(() => {
+            raw.Media[0].Part[0].Stream[0].frameRate = value;
+            return source.resolve({ itemId: 'preview', positionTicks: '0' }, fixture.host);
+        }).then(result => check(result.streams[0].frameRate === expected,
+            'optional malformed frame-rate analysis remains unknown, never a nonfinite bridge result'));
+    }
+    return pending;
+}
+
+function playbackFollowupContracts() {
+    step = 'original summary and acknowledged cleanup';
+    const raw = { ratingKey: 'quality', type: 'movie', duration: 100000,
+        Media: [{ id: 1, videoResolution: '4k', bitrate: 5935, width: 3840, height: 1608, videoCodec: 'hevc',
+            Part: [{ id: 2, key: '/library/parts/2/file.mkv?opaque=value&download=0', size: 8388608 }] }] };
+    let timelineStatus = 200;
+    let stopStatus = 404;
+    let timelines = 0;
+    let stops = 0;
+    const fixture = server({
+        ['GET ' + local + '/library/metadata/quality']: call => {
+            if (call.url.indexOf('includeMarkers=1') >= 0 && call.url.indexOf('includeGuids=1') < 0)
+                check(call.url.indexOf('includeIndexes=1') >= 0, 'playback asks for advertised indexes explicitly');
+            return respond({ MediaContainer: { Metadata: [raw] } });
+        },
+        ['GET ' + local + '/video/:/transcode/universal/decision']: { MediaContainer: {
+            Metadata: [{ Media: [{ bitrate: 4000, Part: [{ decision: 'transcode',
+                Stream: [{ streamType: 1, codec: 'h264', height: 720, decision: 'transcode' }] }] }] }] } },
+        ['GET ' + local + '/:/timeline']: () => { ++timelines; return respond({}, timelineStatus); },
+        ['GET ' + local + '/video/:/transcode/universal/stop']: () => { ++stops; return respond({}, stopStatus); }
+    });
+    const source = createSource({ server: local, token: 'token', serverId: 'machine' }, { device: device });
+    let session;
+    const report = event => source.report({ event: event, itemId: 'quality', playSessionId: session.playSessionId,
+        playMethod: session.playMethod, positionTicks: '437000000' }, fixture.host);
+    return source.details({ itemId: 'quality' }, fixture.host).then(result => {
+        const video = result.item.variants[0].streams.find(s => s.type === 'Video');
+        check(video.width === 3840 && video.height === 1608 && video.codec === 'hevc',
+            'library media analysis survives absent detailed streams for quality menus');
+        return source.resolve({ itemId: 'quality', positionTicks: '0', maxBitrate: 1000000000, maxHeight: 4320,
+            preferredMaxBitrate: 1000000, preferredMaxHeight: 480, measuredBitrate: 2000000, preferRemux: true }, fixture.host);
+    }).then(result => {
+        check(result.playMethod === 'DirectPlay' && result.timelineOriginTicks === '0'
+            && result.url === local + '/library/parts/2/file.mkv?opaque=value&download=1',
+            'Original overrides automatic/settings limits and remux preference without dropping part query parameters');
+        return source.resolve({ itemId: 'quality', positionTicks: '0', preferRemux: true }, fixture.host);
+    }).then(result => {
+        check(result.playMethod === 'DirectPlay' && result.source.bitrate === 5935000
+            && result.source.width === 3840 && result.source.height === 1608,
+            'a remux preference must not accept a lossy server profile or replace the fresh original analysis');
+        return source.resolve({ itemId: 'quality', positionTicks: '437000000', forceTranscode: true }, fixture.host);
+    }).then(result => {
+        session = result;
+        check(session.timelineOriginTicks === '437000000' && session.url.indexOf('offset=43.7') > 0,
+            'fractional server resume owns the whole offset, leaving no initial mpv seek');
+        return fails(() => report('stop'), 'http_404');
+    }).then(() => report('start')).then(() => report('stop')).then(() => {
+        check(stops === 2, 'only an acknowledged, known playback accepts an already-released transcoder');
+        return fails(() => report('stop'), 'http_404');
+    }).then(() => source.resolve({ itemId: 'quality', positionTicks: '437000000', forceTranscode: true }, fixture.host))
+        .then(result => {
+            session = result;
+            stopStatus = 200;
+            timelineStatus = 503;
+            return fails(() => report('stop'), 'http_503');
+        }).then(() => {
+            const previousStops = stops;
+            timelineStatus = 200;
+            return report('stop').then(() => check(stops === previousStops,
+                'retrying a failed final timeline does not release the successful cleanup twice'));
+        }).then(() => source.resolve({ itemId: 'quality', positionTicks: '437000000', forceTranscode: true }, fixture.host))
+        .then(result => {
+            session = result;
+            stopStatus = 503;
+            return fails(() => report('stop'), 'http_503');
+        }).then(() => {
+            const previousTimelines = timelines;
+            stopStatus = 200;
+            return report('stop').then(() => check(timelines === previousTimelines,
+                'retrying failed cleanup does not repeat an acknowledged stopped timeline'));
+        });
+}
+
 export function run() {
     step = 'connections';
     const ordered = connections([
@@ -170,6 +273,8 @@ export function run() {
         check(!show.externalIds.Tvdb, 'a legacy episode path never masquerades as its parent TVDb show');
         check(show.seriesId === '18' && show.seasonId === '19' && show.season === 0 && show.episode === 1
             && show.seriesPosterTag === '/poster' && show.thumbTag === '/still', 'episode shape, season zero kept');
+        check(found.communityRating === 8.5 && found.variants[0].streams[0].frameRate === 23.976,
+            'Plex decimal strings become finite numeric metadata at the source boundary');
         step = 'browse';
         return source.browse({ parentId: 'section:1', collectionType: 'movies', limit: 1, sortBy: 'DateCreated',
             sortOrder: 'Descending', filters: { genres: ['Drama'], filters: ['IsUnplayed'], years: ['2020'],
@@ -199,6 +304,7 @@ export function run() {
         check(variants.length === 2 && variants[0].filename === 'Film.mkv' && variants[1].filename === 'Film.mp4',
             'only file names leave the server');
         check(JSON.stringify(result).indexOf('private') < 0 && variants[0].sizeBytes === undefined, 'no paths, no unsafe sizes');
+        check(variants[1].sizeBytes === '9007199254740993', 'exact decimal file sizes survive beyond JS safe integers');
         check(variants[0].streams[0].rangeType === 'DOVI' && variants[0].streams[2].external, 'streams');
         check(result.item.people[0].id === '1/actor/7' && result.item.people[0].role === 'Lead', 'people');
         return fails(() => source.details({ itemId: '' }, pms.host), 'missing_id');
@@ -207,13 +313,17 @@ export function run() {
         return source.resolve({ itemId: '10', variantId: '101', positionTicks: '0', maxBitrate: 0,
             videoCodecs: ['h264'], restrictVideoCodecs: true }, pms.host);
     }).then(result => {
-        check(result.playMethod === 'DirectPlay' && result.url === local + '/library/parts/1001/1/file.mp4'
+        check(result.playMethod === 'DirectPlay' && result.url === local + '/library/parts/1001/1/file.mp4?download=1'
             && result.variantId === '101', 'the edition asked for plays directly');
+        check(result.streams[0].frameRate === 23.976, 'direct playback uses normalized numeric stream analysis');
         const sidecar = result.streams.find(s => s.external);
         check(sidecar && sidecar.url === local + '/library/streams/12' && sidecar.index >= 10000,
             'a sidecar subtitle comes with its file on the server and an index of its own');
         check(result.headers['X-Plex-Token'] === 'server-token' && result.url.indexOf('server-token') < 0,
             'the token travels in a header');
+        check(result.trickplay.format === 'bif'
+            && result.trickplay.url === local + '/library/parts/1001/indexes/hd?interval=10000'
+            && result.trickplay.headers['X-Plex-Token'] === 'server-token', 'the selected part prefers its advertised HD BIF');
         check(result.segments.length === 2 && result.segments[0].type === 'Intro' && result.segments[0].startTicks === '10000000'
             && result.segments[1].type === 'Outro', 'intro and credits markers');
         return source.resolve({ itemId: '10', variantId: '100', positionTicks: '600000000', maxBitrate: 20000000,
@@ -224,6 +334,10 @@ export function run() {
         check(result.url.indexOf('mediaIndex=0') > 0 && result.url.indexOf('offset=60') > 0
             && result.url.indexOf('maxVideoBitrate=20000') > 0 && result.url.indexOf('videoResolution=1920x1080') > 0,
             'from the right edition, position and ceiling');
+        check(result.timelineOriginTicks === '600000000', 'HLS media zero already represents the server resume offset');
+        check(result.trickplay.format === 'bif'
+            && result.trickplay.url === local + '/library/parts/1000/indexes/sd?interval=10000',
+            'transcoding retains the selected original part index, not an output-part index');
         return fails(() => source.resolve({ itemId: '10', variantId: '999', positionTicks: '0' }, pms.host),
             'selected_variant_unavailable');
     }).then(() => {
@@ -302,5 +416,5 @@ export function run() {
             { state: 'stopped', ratingKey: '10' }, { state: 'playing', ratingKey: '11' }] } }, emit, () => later++);
         check(later === 1, 'finished scans become one later change');
         check(events.length === 1 && events[0][1].itemId === '10', 'playback stopped elsewhere changes that item');
-    }).then(regressions).then(extensionCompatibility).then(catalogue).then(playQueue).then(remoteContracts).then(home);
+    }).then(previewContracts).then(playbackFollowupContracts).then(regressions).then(extensionCompatibility).then(catalogue).then(playQueue).then(remoteContracts).then(home);
 }

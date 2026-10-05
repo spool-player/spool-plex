@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Plex for Spool: one source per Plex user and server.
 
-import { collectionTypes, container, item, milliseconds, page, segments, stream } from './items.mjs';
+import { collectionTypes, container, item, milliseconds, page, segments, stream, trickplay } from './items.mjs';
 import { connect } from './events.mjs';
 import { playbackPlan } from './profile.mjs';
 import { createPlayQueueReporter } from './play-queue.mjs';
@@ -97,6 +97,10 @@ export function customAddress(text) {
 }
 
 export function createSource(configuration, sourceHost) {
+    if ((configuration.server || configuration.serverId || configuration.homeFamilyId)
+        && (typeof configuration.server !== 'string' || !configuration.server
+            || typeof configuration.token !== 'string' || !configuration.token))
+        throw new Error('invalid_config');
     const device = sourceHost.device || {};
     let token = configuration.token || '';
     let activeAccountToken = configuration.activeAccountToken || '';
@@ -119,8 +123,9 @@ export function createSource(configuration, sourceHost) {
     const missingHost = implementedExtensions.filter(id => !extensions[id]);
     if (configuration.homeProtected === true && !extensions['spool.account-activation'])
         throw new Error('activation_host_required');
-    if (configuration.homeProtected === true && (!configuration.homeFamilyId || !configuration.userId))
-        throw new Error('home_relink_required');
+    if (configuration.homeFamilyId && !configuration.userId
+        || configuration.homeProtected === true && !configuration.homeFamilyId)
+        throw new Error('invalid_config');
     let active = !configuration.server || !extensions['spool.account-activation'];
     let stopped = false;
     const denied = new Set();
@@ -164,6 +169,35 @@ export function createSource(configuration, sourceHost) {
             });
         }
         return attempt(0);
+    }
+
+    function validateSavedServer(host) {
+        if (!server || !serverId || !token) throw new Error('invalid_config');
+        const candidates = [server].concat(known.map(c => c.uri).filter(uri => uri !== server));
+        function attempt(index) {
+            const base = candidates[index];
+            return host.http(base + '/', { headers: headers(device, token) }).then(parse).then(result => {
+                if (container(result).machineIdentifier !== serverId)
+                    throw new Error('home_server_identity_mismatch');
+                if (stopped) throw new Error('cancelled');
+                if (server !== base) {
+                    server = base;
+                    sourceHost.emit('configuration', { server: base });
+                }
+            }, error => {
+                if (code(error) !== 'network_error' || index + 1 >= candidates.length) throw error;
+                return attempt(index + 1);
+            });
+        }
+        return attempt(0);
+    }
+
+    // Plex's raw-file route is a download endpoint. Without this switch some
+    // servers return 500 even though the authenticated part is accessible.
+    function partUrl(key) {
+        const path = /[?&]download=/.test(key) ? key.replace(/([?&])download=[^&]*/, '$1download=1')
+            : key + (key.indexOf('?') < 0 ? '?' : '&') + 'download=1';
+        return server + path;
     }
 
     const queueReporter = createPlayQueueReporter({ host: sourceHost,
@@ -379,7 +413,9 @@ export function createSource(configuration, sourceHost) {
                     + encodeURIComponent(token);
             return description;
         },
-        activate: (args, host) => home.activate(args, host).then(result => {
+        activate: (args, host) => home.activate(args, host)
+            .then(result => !result.pick && !home.activation
+                ? validateSavedServer(host).then(() => result) : result).then(result => {
             if (!result.pick) {
                 if (stopped) throw new Error('cancelled');
                 active = true;
@@ -387,6 +423,10 @@ export function createSource(configuration, sourceHost) {
                 remote = makeRemote();
             }
             return result;
+        }).catch(error => {
+            if (['home_identity_mismatch', 'home_server_identity_mismatch'].includes(code(error)))
+                throw new Error('auth_required');
+            throw error;
         }),
         homeSelect: home.select,
         homeSettings: home.settings,
@@ -622,7 +662,7 @@ export function createSource(configuration, sourceHost) {
 
         resolve: (args, host) => {
             const positionMs = milliseconds(args.positionTicks);
-            return request(host, 'GET', metadata(args.itemId), { includeMarkers: 1 }).then(result => {
+            return request(host, 'GET', metadata(args.itemId), { includeMarkers: 1, includeIndexes: 1 }).then(result => {
                 const raw = (container(result).Metadata || [])[0];
                 if (!raw)
                     throw new Error('playback_unavailable');
@@ -648,7 +688,7 @@ export function createSource(configuration, sourceHost) {
                     hasMDE: 1, fastSeek: 1, directPlay: 0, directStream: plan.directStream,
                     directStreamAudio: plan.directStream, videoQuality: 100, maxVideoBitrate: plan.bitrateKbps,
                     audioBitrate: kind === 'music' ? Math.min(320, plan.bitrateKbps) : undefined,
-                    videoResolution: plan.resolution, offset: Math.floor(positionMs / 1000),
+                    videoResolution: plan.resolution, offset: positionMs / 1000,
                     session: session, location: known.some(c => c.uri === server && c.local) ? 'lan' : 'wan',
                     'X-Plex-Session-Identifier': session, 'X-Plex-Client-Identifier': String(device.id || 'spool'),
                     'X-Plex-Product': 'Spool', 'X-Plex-Platform': 'Generic', 'X-Plex-Client-Profile-Name': 'Chrome'
@@ -668,14 +708,18 @@ export function createSource(configuration, sourceHost) {
                         url: /^\/library\/streams\/\d+/.test(String(rawStream.key)) ? server + rawStream.key : undefined });
                 };
                 function resolved(outputPart, method) {
-                    sessions[session] = { duration: raw.duration || selected.duration, partId: part.id, endpoint: endpoint };
+                    sessions[session] = { itemId: String(raw.ratingKey), method: method,
+                        duration: raw.duration || selected.duration, partId: part.id, endpoint: endpoint };
                     return {
-                        url: method === 'DirectPlay' ? server + part.key : server + endpoint + 'start.m3u8?' + query(parameters),
+                        url: method === 'DirectPlay' ? partUrl(part.key) : server + endpoint + 'start.m3u8?' + query(parameters),
                         headers: { 'X-Plex-Token': token, 'X-Plex-Client-Identifier': String(device.id || 'spool'),
                             'X-Plex-Session-Identifier': session },
                         variantId: String(selected.id), playSessionId: session, playMethod: method,
+                        source: plan.source,
+                        timelineOriginTicks: method === 'DirectPlay' || positionMs === 0 ? '0' : String(positionMs) + '0000',
                         container: method === 'DirectPlay' ? selected.container || '' : 'mpegts',
-                        streams: (outputPart.Stream || []).map(mapStream).filter(s => s.type), segments: segments(raw)
+                        streams: (outputPart.Stream || []).map(mapStream).filter(s => s.type), segments: segments(raw),
+                        trickplay: kind === 'video' ? trickplay(part, server, { 'X-Plex-Token': token }) : undefined
                     };
                 }
                 if (plan.direct)
@@ -694,13 +738,19 @@ export function createSource(configuration, sourceHost) {
                     if (!outputPart)
                         throw new Error('transcode_unavailable');
                     const outputVideo = (outputPart.Stream || []).find(s => s.streamType === 1);
+                    const videoDecision = outputVideo && outputVideo.decision;
+                    const copied = videoDecision === 'copy' || outputPart.decision === 'copy';
+                    // Remuxing is a preference, not permission to lose original
+                    // quality. The Chrome profile can re-encode a compatible
+                    // HEVC source even when copying was permitted; keep the
+                    // original that already satisfies the actual device limits.
+                    if (plan.directStream && outputVideo && !copied)
+                        return resolved(part, 'DirectPlay');
                     if (!outputVideo || outputPart.decision === 'directplay')
                         throw new Error('transcode_unavailable');
                     if (Number(output.bitrate) * 1000 > plan.ceiling || plan.height
                         && Number((outputVideo && outputVideo.height) || output.height) > plan.height)
                         throw new Error('quality_unavailable');
-                    const videoDecision = outputVideo && outputVideo.decision;
-                    const copied = videoDecision === 'copy' || outputPart.decision === 'copy';
                     if (!plan.directStream && copied)
                         throw new Error('quality_unavailable');
                     if (args.restrictVideoCodecs && outputVideo && (args.videoCodecs || [])
@@ -745,25 +795,46 @@ export function createSource(configuration, sourceHost) {
             if (!state)
                 throw new Error('invalid_report');
             const playback = sessions[args.playSessionId] || {};
+            if (playback.itemId && playback.itemId !== args.itemId)
+                throw new Error('invalid_report');
             const positionMs = milliseconds(args.positionTicks);
             if (args.event !== 'stop')
                 queueReporter.update(args.queue, args.queueIndex);
-            const timeline = request(host, 'GET', '/:/timeline', Object.assign({ ratingKey: args.itemId,
-                key: metadata(args.itemId), state: state, time: positionMs,
-                duration: playback.duration, partID: playback.partId,
-                'X-Plex-Session-Identifier': args.playSessionId }, queueReporter.timeline(args.itemId))).then(() => ({}));
+            const timeline = args.event === 'stop' && playback.timelineStopped ? Promise.resolve({})
+                : request(host, 'GET', '/:/timeline', Object.assign({ ratingKey: args.itemId,
+                    key: metadata(args.itemId), state: state, time: positionMs,
+                    duration: playback.duration, partID: playback.partId,
+                    'X-Plex-Session-Identifier': args.playSessionId }, queueReporter.timeline(args.itemId))).then(() => {
+                    if (args.event === 'start')
+                        playback.started = true;
+                    if (args.event === 'stop')
+                        playback.timelineStopped = true;
+                    return {};
+                });
             if (args.event !== 'stop')
                 return timeline;
             queueReporter.stop();
-            delete sessions[args.playSessionId];
-            if (args.playMethod !== 'Transcode' && args.playMethod !== 'DirectStream')
-                return timeline;
-            // Stop the server session even if the final timeline update failed,
-            // but do not turn either failure into a false reporting success.
-            const stop = () => request(host, 'GET', (playback.endpoint || '/video/:/transcode/universal/') + 'stop',
-                { session: args.playSessionId });
-            return timeline.then(() => stop().then(() => ({})), error =>
-                stop().then(() => { throw error; }, () => { throw error; }));
+            const transcode = (playback.method || args.playMethod) === 'Transcode'
+                || (playback.method || args.playMethod) === 'DirectStream';
+            const stop = () => {
+                if (!transcode || playback.transcodeStopped)
+                    return Promise.resolve({});
+                return request(host, 'GET', (playback.endpoint || '/video/:/transcode/universal/') + 'stop',
+                    { session: args.playSessionId, 'X-Plex-Session-Identifier': args.playSessionId }).then(() => {
+                    playback.transcodeStopped = true;
+                }, error => {
+                    // PMS also releases a transcoder when its reader unloads.
+                    // A 404 completes cleanup only for this known, acknowledged
+                    // playback session, never for an unknown/wrong session ID.
+                    if (code(error) !== 'http_404' || !playback.itemId || !playback.started)
+                        throw error;
+                    playback.transcodeStopped = true;
+                });
+            };
+            return timeline.then(() => stop().then(() => {
+                delete sessions[args.playSessionId];
+                return {};
+            }), error => stop().then(() => { throw error; }, () => { throw error; }));
         },
 
         favorite: (args, host) => request(host, 'PUT', '/:/rate', { key: args.itemId, identifier: library,

@@ -32,20 +32,21 @@ export function createHome(options) {
         }
         return host.http('https://plex.tv' + path, request).then(response => {
             current();
-            if (response.status === 401 || response.status === 403) throw new Error('home_authentication_failed');
+            if (response.status === 401 || response.status === 403)
+                throw new Error(method === 'POST' ? 'home_authentication_failed' : 'http_401');
             if (response.status < 200 || response.status >= 300) throw new Error('http_' + response.status);
             return parseXml(response.body);
         });
     }
     function users(host, linkedToken) {
-        if (!linkedToken) throw new Error('home_relink_required');
+        if (!linkedToken) throw new Error('invalid_config');
         return xml(host, 'GET', '/api/home/users', linkedToken).then(root => {
             if (root.name !== 'MediaContainer') throw new Error('invalid_home_response');
             return root.children.filter(node => node.name === 'User').map(node => identity(node.attributes));
         });
     }
     function resources(host, user, activeToken) {
-        if (!activeToken) throw new Error('home_relink_required');
+        if (!activeToken) throw new Error('invalid_config');
         return options.tv(host, 'GET', '/api/v2/user', {}, activeToken).then(profile => {
             current();
             if (text(profile.id) !== user.id) throw new Error('home_identity_mismatch');

@@ -11,7 +11,8 @@ export const collectionTypes = { movie: 'movies', show: 'tvshows', artist: 'musi
 // Plex counts milliseconds; Spool counts 100 ns ticks as decimal strings.
 export function ticks(milliseconds) {
     const value = Number(milliseconds);
-    return Number.isSafeInteger(value) && value >= 0 ? (value === 0 ? '0' : String(value) + '0000') : undefined;
+    return Number.isSafeInteger(value) && value >= 0 && value <= 922337203685477
+        ? (value === 0 ? '0' : String(value) + '0000') : undefined;
 }
 
 export function milliseconds(ticksValue) {
@@ -55,6 +56,11 @@ function externalIds(raw) {
     return ids;
 }
 
+export function finiteNumber(value) {
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? number : 0;
+}
+
 function range(raw) {
     if (raw.DOVIPresent)
         return 'DOVI';
@@ -69,9 +75,9 @@ export function stream(raw) {
         index: Number.isInteger(raw.index) ? raw.index : -1, type: type, codec: raw.codec || '',
         profile: raw.profile || '', language: raw.languageTag || raw.languageCode || '',
         title: raw.extendedDisplayTitle || raw.displayTitle || raw.title || '',
-        width: raw.width || 0, height: raw.height || 0, frameRate: raw.frameRate || 0,
-        bitrate: (raw.bitrate || 0) * 1000, bitDepth: raw.bitDepth || 0, channels: raw.channels || 0,
-        sampleRate: raw.samplingRate || 0, range: type === 'Video' ? (hdr ? 'HDR' : 'SDR') : '',
+        width: finiteNumber(raw.width), height: finiteNumber(raw.height), frameRate: finiteNumber(raw.frameRate),
+        bitrate: finiteNumber(Number(raw.bitrate) * 1000), bitDepth: finiteNumber(raw.bitDepth), channels: finiteNumber(raw.channels),
+        sampleRate: finiteNumber(raw.samplingRate), range: type === 'Video' ? (hdr ? 'HDR' : 'SDR') : '',
         rangeType: type === 'Video' ? hdr || 'SDR' : '', default: Boolean(raw.default), forced: Boolean(raw.forced),
         external: Boolean(raw.key), interlaced: raw.scanType === 'interlaced'
     };
@@ -80,13 +86,25 @@ export function stream(raw) {
 // Only the file name leaves the server: full paths reveal its layout.
 function variant(raw) {
     const part = (raw.Part || [])[0] || {};
-    const size = Number(part.size);
+    const size = typeof part.size === 'string' && /^(0|[1-9][0-9]*)$/.test(part.size)
+        && (part.size.length < 19 || part.size.length === 19 && part.size <= '9223372036854775807')
+        ? part.size : Number.isSafeInteger(part.size) && part.size >= 0 ? String(part.size) : undefined;
+    const streams = (part.Stream || []).map(stream).filter(s => s.type);
+    const video = streams.find(s => s.type === 'Video');
+    // Library rows commonly advertise video analysis only on Media, without
+    // detailed Part.Stream entries. Keep that source analysis in the menu.
+    if (video) {
+        video.width = video.width || finiteNumber(raw.width);
+        video.height = video.height || finiteNumber(raw.height);
+    } else if (raw.videoCodec || raw.width || raw.height) {
+        streams.unshift(stream({ streamType: 1, codec: raw.videoCodec, width: raw.width, height: raw.height }));
+    }
     return {
         id: String(raw.id), label: [raw.videoResolution && raw.videoResolution.toUpperCase(), raw.editionTitle]
             .filter(Boolean).join(' · '),
         container: raw.container || part.container || '', filename: String(part.file || '').split(/[\\/]/).pop(),
-        sizeBytes: Number.isSafeInteger(size) ? String(size) : undefined, bitrate: (raw.bitrate || 0) * 1000,
-        runtimeTicks: ticks(raw.duration), streams: (part.Stream || []).map(stream).filter(s => s.type)
+        sizeBytes: size, bitrate: finiteNumber(Number(raw.bitrate) * 1000),
+        runtimeTicks: ticks(raw.duration), streams: streams
     };
 }
 
@@ -138,8 +156,8 @@ export function item(raw) {
         seriesPosterTag: episode ? raw.grandparentThumb || '' : season ? raw.parentThumb || '' : '',
         albumPosterTag: track ? raw.parentThumb || '' : '',
         genres: (raw.Genre || []).map(genre => genre.tag), studios: raw.studio ? [raw.studio] : [],
-        officialRating: raw.contentRating || '', communityRating: raw.audienceRating || raw.rating || 0,
-        criticRating: raw.rating ? Math.round(raw.rating * 10) : 0, externalIds: externalIds(raw)
+        officialRating: raw.contentRating || '', communityRating: finiteNumber(raw.audienceRating || raw.rating),
+        criticRating: Math.round(finiteNumber(raw.rating) * 10), externalIds: externalIds(raw)
     };
     const credits = people(raw);
     if (credits.length > 0)
@@ -169,4 +187,15 @@ export function segments(raw) {
         type: kinds[marker.type], startTicks: ticks(marker.startTimeOffset) || '0',
         endTicks: ticks(marker.endTimeOffset) || '0'
     }));
+}
+
+// The server advertises BIF indexes on the original media part, not the
+// transcoder's output. Never infer an index when the advertised list is empty.
+export function trickplay(part, server, headers) {
+    if (!part || !/^\d+$/.test(String(part.id)) || typeof part.indexes !== 'string')
+        return undefined;
+    const indexes = part.indexes.split(',').map(value => value.trim());
+    const index = indexes.indexOf('hd') >= 0 ? 'hd' : indexes.indexOf('sd') >= 0 ? 'sd' : '';
+    return index ? { format: 'bif', url: server + '/library/parts/' + part.id + '/indexes/' + index
+        + '?interval=10000', headers: headers } : undefined;
 }

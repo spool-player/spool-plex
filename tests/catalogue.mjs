@@ -142,7 +142,7 @@ export function run() {
         return fails(() => source.collectionRemove({ containerId: 'p', entryId: '11' }, host), 'permission_denied');
     }).then(() => source.collectionInfo({ containerId: 'p' }, host)).then(info => {
         check(!info.removable, '403 invalidates policy and disables subsequent editing');
-        const legacy = createSource({ server: 'http://pms' }, { device: {} });
+        const legacy = createSource({ server: 'http://pms', token: 'server-token' }, { device: {} });
         const before = calls.length;
         return fails(() => legacy.suggestions({}, host), 'unsupported_extension')
             .then(() => fails(() => legacy.collectionInfo({ containerId: 'p' }, host), 'unsupported_extension'))

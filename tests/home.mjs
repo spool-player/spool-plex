@@ -11,7 +11,7 @@ function fails(action, expected) {
 }
 function fixture() {
     const state = { offline: false, denied: false, wrongUser: false, wrongServer: false,
-        removeServer: false, deferUsers: false, homeStatus: 200, emptyHome: false, profile: {},
+        removeServer: false, deferUsers: false, homeStatus: 200, serverStatus: 200, emptyHome: false, profile: {},
         calls: [], events: [], sockets: [], pending: null };
     const json = value => ({ status: 200, body: JSON.stringify(value) });
     const xml = body => ({ status: 200, body: body });
@@ -61,6 +61,8 @@ function fixture() {
             } else if (path === '/') {
                 check(token === 'member-pms' || token === 'full-pms' || token === 'member-other',
                     'server receives only its resource token');
+                if (state.serverStatus !== 200)
+                    return Promise.resolve({ status: state.serverStatus, body: '' });
                 response = json({ MediaContainer: { machineIdentifier: state.wrongServer ? 'impostor'
                     : url.indexOf(second) === 0 ? 'other' : 'machine' } });
             } else if (path === '/library/sections') {
@@ -157,10 +159,10 @@ function family() {
         return fails(() => createSource(config(), denied.host).activate(args('family', { grant: grant }), denied.host), 'home_server_unavailable');
     }).then(() => {
         const wrong = fixture(); wrong.state.wrongUser = true;
-        return fails(() => createSource(config(), wrong.host).activate(args('family', { grant: grant }), wrong.host), 'home_identity_mismatch');
+        return fails(() => createSource(config(), wrong.host).activate(args('family', { grant: grant }), wrong.host), 'auth_required');
     }).then(() => {
         const wrong = fixture(); wrong.state.wrongServer = true;
-        return fails(() => createSource(config(), wrong.host).activate(args('family', { grant: grant }), wrong.host), 'home_server_identity_mismatch');
+        return fails(() => createSource(config(), wrong.host).activate(args('family', { grant: grant }), wrong.host), 'auth_required');
     }).then(() => {
         const typed = 'https://plex.example.com';
         const remote = fixture(); remote.state.unreachable = origin;
@@ -270,7 +272,7 @@ function optionalHomeEndpoint() {
             const f = fixture();
             f.state.homeStatus = status;
             return fails(() => createSource({}, f.host).pinPoll({ id: '7' }, f.host),
-                status === 500 ? 'http_500' : 'home_authentication_failed')
+                status === 500 ? 'http_500' : 'http_401')
                 .then(() => check(!f.state.calls.some(call => call.path === '/api/v2/resources'),
                     'Home auth denial or temporary failure is not optional-endpoint absence'));
         });
@@ -287,6 +289,48 @@ function optionalHomeEndpoint() {
         f.state.homeStatus = 404;
         return fails(() => createSource(config(), f.host).activate(args('startup'), f.host), 'http_404')
             .then(() => check(f.state.sockets.length === 0, 'configured Home remains locked when enumeration is absent'));
+    }).then(() => {
+        for (const credentials of [{ token: '' }, { token: undefined }, { userId: '' }]) {
+            const f = fixture();
+            let rejected = false;
+            try { createSource(config(credentials), f.host); }
+            catch (error) { rejected = error.message === 'invalid_config'; }
+            check(rejected && f.state.calls.length === 0 && f.state.events.length === 0,
+                'incomplete saved credentials request reconnect before network or persistence');
+        }
+        const f = fixture();
+        return fails(() => createSource(config({ linkedAccountToken: '' }), f.host)
+            .activate(args('switch'), f.host), 'invalid_config').then(() => {
+            check(f.state.calls.length === 0 && f.state.events.length === 0,
+                'missing linked credential cannot unlock or overwrite the saved account');
+        });
+    }).then(() => {
+        const f = fixture();
+        f.state.homeStatus = 401;
+        const source = createSource(config(), f.host);
+        return fails(() => source.activate(args('switch'), f.host), 'http_401').then(() => {
+            check(!source.describe().artwork && f.state.sockets.length === 0 && f.state.events.length === 0,
+                'expired linked credential requests reconnect while retaining locked stored credentials');
+        });
+    }).then(() => {
+        const f = fixture();
+        f.state.serverStatus = 401;
+        const source = createSource({ server: origin, serverId: 'machine', token: 'member-pms' }, f.host);
+        return fails(() => source.activate(args('startup'), f.host), 'http_401').then(() => {
+            check(f.state.calls.length === 1 && f.state.calls[0].path === '/'
+                && !source.describe().artwork && f.state.sockets.length === 0 && f.state.events.length === 0,
+                'ordinary saved PMS credentials are verified before publishing an active account');
+        });
+    }).then(() => {
+        const f = fixture();
+        const backup = 'https://backup.example:32400';
+        f.state.unreachable = origin;
+        const source = createSource({ server: origin, serverId: 'machine', token: 'member-pms',
+            connections: [{ uri: origin }, { uri: backup }] }, f.host);
+        return source.activate(args('switch'), f.host).then(() => {
+            check(source.describe().artwork.indexOf(backup) === 0 && f.state.sockets.length === 0,
+                'ordinary activation keeps approved network failover without premature notification sockets');
+        });
     });
 }
 export function run() { return optionalHomeEndpoint().then(login).then(gate).then(family).then(automatic).then(legacyAndCancellation); }
