@@ -178,7 +178,7 @@ export function createRemote(options) {
                 result.item = item(peer.raw);
                 result.audioTracks = tracks(peer, 2);
                 result.subtitleTracks = tracks(peer, 3);
-                result.preview = preview(peer);
+                result.preview = peer.videoPreviews ? preview(peer) : undefined;
             }
             if (queueId(peer) && raw.playQueueVersion !== undefined)
                 result.queueRevision = queueId(peer) + ':' + raw.playQueueVersion;
@@ -275,7 +275,7 @@ export function createRemote(options) {
         if (!known) throw new Error('target_not_found');
         const ticket = ++epoch;
         const peer = Object.assign({}, known, { origin: known.origins[0], timeline: {}, raw: null, queue: null,
-            busy: false, pageSerial: 0, playUnavailable: unavailablePlayers.has(known.id) });
+            busy: false, pageSerial: 0, playUnavailable: unavailablePlayers.has(known.id), videoPreviews: args.videoPreviews === true });
         attached = peer;
         acceptedPoll = ++pollSerial;
         // Host consent is for this exact first origin only; never downgrade or
@@ -502,7 +502,8 @@ export function createRemote(options) {
         throw new Error('unsupported_remote_command');
     }
     return { remoteTargets: refresh, remoteConnect: connect,
-        remoteState: (args, operationHost) => { const peer = selected(args.targetId); return poll(operationHost, peer, epoch); },
+        remoteState: (args, operationHost) => { const peer = selected(args.targetId);
+            peer.videoPreviews = args.videoPreviews === true; return poll(operationHost, peer, epoch); },
         remoteQueue: queuePage, remoteCommand: command, remoteControls: controls, remoteControl: advanced,
         stop: () => {
             attached = null; targets.clear(); unavailablePlayers.clear(); verifiedCapabilities.clear(); ++epoch; ++discovering;

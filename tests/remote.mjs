@@ -163,7 +163,7 @@ export function run() {
     xml();
     const f = fixture();
     const invoke = command => f.source.remoteCommand({ targetId: 'peer', command: command }, f.host);
-    const readState = () => f.source.remoteState({ targetId: 'peer' }, f.host);
+    const readState = () => f.source.remoteState({ targetId: 'peer', videoPreviews: true }, f.host);
     let stale;
     let firstCursor;
     return f.source.remoteTargets({}, f.host).then(result => {
@@ -172,7 +172,7 @@ export function run() {
         return fails(() => f.source.remoteConnect({ targetId: 'peer' }, f.host), 'origin_denied');
     }).then(() => {
         f.granted.add(player);
-        return f.source.remoteConnect({ targetId: 'peer' }, f.host);
+        return f.source.remoteConnect({ targetId: 'peer', videoPreviews: true }, f.host);
     }).then(snapshot => {
         check(snapshot.state === 'playing' && snapshot.positionTicks === '12500000' && snapshot.volume === undefined,
             'known milliseconds normalize while unknown volume stays absent');

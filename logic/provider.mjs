@@ -7,6 +7,7 @@ import { playbackPlan } from './profile.mjs';
 import { createPlayQueueReporter } from './play-queue.mjs';
 import { createRemote } from './remote.mjs';
 import { createHome } from './home.mjs';
+import { createDownloads } from './download.mjs';
 
 const plexTv = 'https://plex.tv';
 const library = 'com.plexapp.plugins.library';
@@ -199,6 +200,9 @@ export function createSource(configuration, sourceHost) {
             : key + (key.indexOf('?') < 0 ? '?' : '&') + 'download=1';
         return server + path;
     }
+    const downloads = createDownloads({ request: request, policy: accountPolicy, metadata: id => metadata(id),
+        partUrl: partUrl, query: query, server: () => server, headers: () => headers(device, token),
+        deviceId: String(device.id || 'spool'), local: () => known.some(c => c.uri === server && c.local) });
 
     const queueReporter = createPlayQueueReporter({ host: sourceHost,
         request: (method, path, parameters) => request(sourceHost, method, path, parameters),
@@ -660,9 +664,12 @@ export function createSource(configuration, sourceHost) {
                     officialRatings: ratings, supported: supported }));
         },
 
+        download: (args, host) => downloads.download(args, host),
+        downloadRelease: (args, host) => downloads.downloadRelease(args, host),
         resolve: (args, host) => {
             const positionMs = milliseconds(args.positionTicks);
-            return request(host, 'GET', metadata(args.itemId), { includeMarkers: 1, includeIndexes: 1 }).then(result => {
+            return request(host, 'GET', metadata(args.itemId), { includeMarkers: 1,
+                includeIndexes: args.videoPreviews ? 1 : undefined }).then(result => {
                 const raw = (container(result).Metadata || [])[0];
                 if (!raw)
                     throw new Error('playback_unavailable');
@@ -719,7 +726,7 @@ export function createSource(configuration, sourceHost) {
                         timelineOriginTicks: method === 'DirectPlay' || positionMs === 0 ? '0' : String(positionMs) + '0000',
                         container: method === 'DirectPlay' ? selected.container || '' : 'mpegts',
                         streams: (outputPart.Stream || []).map(mapStream).filter(s => s.type), segments: segments(raw),
-                        trickplay: kind === 'video' ? trickplay(part, server, { 'X-Plex-Token': token }) : undefined
+                        trickplay: args.videoPreviews && kind === 'video' ? trickplay(part, server, { 'X-Plex-Token': token }) : undefined
                     };
                 }
                 if (plan.direct)

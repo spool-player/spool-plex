@@ -9,7 +9,7 @@
   "homepage": "https://github.com/spool-player/spool-plex",
   "icon": "assets/icon.png",
   "entry": "logic/provider.mjs",
-  "capabilities": ["search", "userState", "reporting", "segments", "streamQuality", "trickplay"],
+  "capabilities": ["search", "userState", "reporting", "segments", "streamQuality", "trickplay", "downloads", "downloadTranscode"],
   "extensions": {"spool.speed-test": 1, "spool.suggestions": 1, "spool.item-actions": 1, "spool.collection-editing": 1,
     "spool.playback-queue-reporting": 1, "spool.remote-targets": 1,
     "spool.http-metadata": 1, "spool.origin-grants": 1, "spool.account-activation": 1},

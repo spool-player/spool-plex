@@ -12,6 +12,7 @@ import { run as catalogue } from './catalogue.mjs';
 import { run as playQueue } from './play-queue.mjs';
 import { run as remoteContracts } from './remote.mjs';
 import { run as home } from './home.mjs';
+import { run as downloadContracts } from './download.mjs';
 
 let step = 'start';
 function check(value, message) {
@@ -155,7 +156,7 @@ function previewContracts() {
     for (const value of [undefined, '', 'unsupported', 'sds', ['sd']]) {
         pending = pending.then(() => {
             indexes = value;
-            return source.resolve({ itemId: 'preview', positionTicks: '0' }, fixture.host);
+            return source.resolve({ itemId: 'preview', positionTicks: '0', videoPreviews: true }, fixture.host);
         }).then(result => check(result.trickplay === undefined && result.playMethod === 'DirectPlay',
             'missing, malformed, or unknown advertised indexes do not invent BIF availability'));
     }
@@ -166,7 +167,12 @@ function previewContracts() {
         }).then(result => check(result.streams[0].frameRate === expected,
             'optional malformed frame-rate analysis remains unknown, never a nonfinite bridge result'));
     }
-    return pending;
+    return pending.then(() => {
+        indexes = 'hd';
+        return source.resolve({ itemId: 'preview', positionTicks: '0', videoPreviews: false }, fixture.host);
+    }).then(result => check(result.trickplay === undefined
+        && fixture.calls[fixture.calls.length - 1].url.indexOf('includeIndexes') < 0,
+        'disabled previews skip index request and omit BIF even if metadata advertises it'));
 }
 
 function playbackFollowupContracts() {
@@ -179,9 +185,7 @@ function playbackFollowupContracts() {
     let timelines = 0;
     let stops = 0;
     const fixture = server({
-        ['GET ' + local + '/library/metadata/quality']: call => {
-            if (call.url.indexOf('includeMarkers=1') >= 0 && call.url.indexOf('includeGuids=1') < 0)
-                check(call.url.indexOf('includeIndexes=1') >= 0, 'playback asks for advertised indexes explicitly');
+        ['GET ' + local + '/library/metadata/quality']: () => {
             return respond({ MediaContainer: { Metadata: [raw] } });
         },
         ['GET ' + local + '/video/:/transcode/universal/decision']: { MediaContainer: {
@@ -311,7 +315,7 @@ export function run() {
     }).then(() => {
         step = 'resolve';
         return source.resolve({ itemId: '10', variantId: '101', positionTicks: '0', maxBitrate: 0,
-            videoCodecs: ['h264'], restrictVideoCodecs: true }, pms.host);
+            videoPreviews: true, videoCodecs: ['h264'], restrictVideoCodecs: true }, pms.host);
     }).then(result => {
         check(result.playMethod === 'DirectPlay' && result.url === local + '/library/parts/1001/1/file.mp4?download=1'
             && result.variantId === '101', 'the edition asked for plays directly');
@@ -327,7 +331,7 @@ export function run() {
         check(result.segments.length === 2 && result.segments[0].type === 'Intro' && result.segments[0].startTicks === '10000000'
             && result.segments[1].type === 'Outro', 'intro and credits markers');
         return source.resolve({ itemId: '10', variantId: '100', positionTicks: '600000000', maxBitrate: 20000000,
-            maxHeight: 1080, videoCodecs: ['h264'], restrictVideoCodecs: true }, pms.host);
+            videoPreviews: true, maxHeight: 1080, videoCodecs: ['h264'], restrictVideoCodecs: true }, pms.host);
     }).then(result => {
         check(result.playMethod === 'Transcode' && result.url.indexOf(local + '/video/:/transcode/universal/start.m3u8?') === 0,
             'what this device cannot play is transcoded');
@@ -416,5 +420,5 @@ export function run() {
             { state: 'stopped', ratingKey: '10' }, { state: 'playing', ratingKey: '11' }] } }, emit, () => later++);
         check(later === 1, 'finished scans become one later change');
         check(events.length === 1 && events[0][1].itemId === '10', 'playback stopped elsewhere changes that item');
-    }).then(previewContracts).then(playbackFollowupContracts).then(regressions).then(extensionCompatibility).then(catalogue).then(playQueue).then(remoteContracts).then(home);
+    }).then(previewContracts).then(playbackFollowupContracts).then(downloadContracts).then(regressions).then(extensionCompatibility).then(catalogue).then(playQueue).then(remoteContracts).then(home);
 }

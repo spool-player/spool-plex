@@ -49,12 +49,39 @@ transcoded. Spool decodes and caches the whole BIF sequence natively, rather tha
 requesting an image for every hover position. Missing or failed indexes leave
 previews unavailable without failing playback.
 
+The host's device-local `videoPreviews` flag gates local and remote BIF descriptors.
+When disabled, resolve does not request `includeIndexes`; ordinary detail metadata,
+artwork and markers remain available. Details never performs a preview-only request.
+
 This follows Plex's own
 [`PlexPart.getIndexPath/getIndexUrl`](https://github.com/plexinc/plex-for-kodi/blob/master/lib/_included_packages/plexnet/plexpart.py)
 and
 [`PlexPlayer` BIF selection](https://github.com/plexinc/plex-for-kodi/blob/master/lib/_included_packages/plexnet/plexplayer.py).
 URLs remain on the owning PMS connection and contain no token;
 `X-Plex-Token` stays in account-scoped headers and is never sent to a Companion peer.
+
+### Offline downloads
+
+Original downloads use the authenticated `download=1` raw-file route for the exact
+selected edition and part. Ambiguous editions and multipart items open one provider
+picker listing edition/part combinations; a multipart selection downloads **one part**,
+not an invented concatenation. Missing files remain visibly unavailable. The picker
+shows the host's original/converted mode and quality without adding a second quality control.
+
+Converted video downloads negotiate universal `decision` with `protocol=http`, then
+transfer `/video/:/transcode/universal/start.mkv?protocol=http&download=1` from offset zero.
+This is a progressive Matroska media response, never an HLS/DASH playlist. Plex's own
+[`buildTranscodeMkv`](https://github.com/plexinc/plex-for-kodi/blob/master/lib/_included_packages/plexnet/plexplayer.py)
+uses this endpoint/protocol. Server decision denials, advertised download/sync permission
+denials, disabled video transcoding and rejected quality limits are explicit errors.
+Audio conversion is not offered by this video endpoint; original audio remains downloadable.
+
+Download sessions use a separate `spool-download-…` identifier and never enter the
+playback reporter or alter watched state. `downloadRelease` stops that universal
+session after success, error or cancellation; an already-expired session's HTTP 404
+is safe to acknowledge. Transfer size is unknown for converted output; unsafe original
+numeric sizes are omitted. Tokens remain in headers, never URL/log fields. Guarded debug
+logs describe selection indexes and accepted protocol only.
 
 
 ### Plex Home and device sign-in
