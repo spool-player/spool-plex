@@ -242,13 +242,10 @@ measurement. New automatic tests wait for idle, but an in-flight bounded test
 finishes if playback starts. Explicit refresh may measure during playback;
 Auto shows measuring, completed or unavailable rather than endlessly cancelling
 and reverting to a deferred status.
-This requires negotiated `spool.speed-test` version 1. It is intentionally absent
-from the legacy capability list so older API 0.2 hosts do not show an unsupported
-probe control. Baseline login, browsing, playback and reporting remain available
-without `host.extensions`; application version strings never imply support.
-Login, settings and item pickers request baseline `extensionStatus` and show
-“Update Spool to use all features of this provider.” when host support is missing.
-Server endpoint or permission failures are separate from host compatibility.
+This requires negotiated `spool.speed-test` version 1; application version strings
+never imply feature support. Current provider builds require the current Spool host
+contract, including native logging; older hosts are not supported. Missing declared
+host features and server endpoint/permission failures are separate conditions.
 
 The media-part and transcode protocols follow Plex's own
 [player implementation](https://github.com/plexinc/plex-for-kodi/blob/master/lib/_included_packages/plexnet/plexplayer.py)
@@ -274,9 +271,9 @@ stay empty rather than borrowing resume rows.
 
 `spool.item-actions` loads policy only when an item menu opens. Known permission denials suppress
 actions; absent granular permission metadata is not an authorization grant, and the user-initiated
-server operation remains authoritative. Legacy API 0.2 hosts retain their baseline playlist/delete
-actions, with the same provider-side checks. Collection create/add/rename and explicit sort choices
-live in the provider picker and are never exposed through legacy manifest actions.
+server operation remains authoritative. Collection create/add/rename and explicit
+sort choices live in the provider picker; manifest playlist/delete actions retain
+the same provider-side authorization checks.
 
 `spool.collection-editing` lists playlist occurrences and regular collection members in native
 order. Playlist removal/movement uses the exact `playlistItemID`, not the media rating key.
