@@ -365,9 +365,9 @@ To try a checkout in Spool without releasing it, configure Spool with
 
 ## Releasing
 
-Current release: **0.1.5**, adding authenticated sidecar subtitles to playback
-and database IDs in search results for cross-provider duplicate detection,
-while retaining custom-address sign-in from 0.1.4.
+Current release: **0.1.7**, adding original and server-converted downloads,
+global seek-preview opt-out and filtered provider diagnostics for Spool 0.9.0.
+Downloads retain the chosen edition/part and use independent server sessions.
 
 Bump `version` in `manifest.json` when needed, push `main`, then push the matching `v<version>` tag.
 The workflow verifies pinned SDK hashes, runs the contract in Qt JIT and interpreter modes,
