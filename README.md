@@ -116,6 +116,14 @@ The selected media edition is retained. Bitrate precedence is:
 4. Spool's measured conservative ceiling.
 5. 120 Mbit/s before a successful measurement.
 
+The menu always offers **Original**, which overrides automatic and standing
+limits with a 1 Gbit/s/source-resolution ceiling and bypasses the remux
+preference when the original is decodable. It does not bypass device codec
+restrictions or an explicit force-transcode request. Resolution rungs use fresh
+selected-edition analysis, not the transcoder output or measured bandwidth.
+Widescreen 3840×1608 material belongs to the 4K class; a highly compressed
+5.935 Mbit/s 4K file must not hide 4K, 1080p or 720p choices.
+
 The explicit height selection overrides the standing height preference. Neither is bypassed by
 unlimited LAN mode. Media with missing bitrate or required height analysis is negotiated rather
 than assumed to fit. Direct play uses the original authenticated media-part URL
@@ -146,6 +154,19 @@ and mpv loading error -13 with that malformed field; the identical provider URL
 with typed individual mpv headers loaded and played. The universal transcode
 request and discovered account credential/address did not need a fallback or
 parameter rewrite.
+
+For local troubleshooting with sibling checkouts, run from the Spool checkout:
+
+```sh
+nix run .#local-providers -- --unredacted-urls
+```
+
+This explicitly exposes full playback URLs in Spool's local log, preserving
+encoded Plex profile parameters. **Treat the log as sensitive: URL credentials
+and server addresses may be visible.** Non-URL password/token fields remain
+redacted; the Plex server token continues to travel in the media request headers,
+not in the stream URL. Reproducing an authenticated request requires those
+private headers as well. Restart without the flag to restore safe URL logging.
 
 Timeline reports include the known duration and media part, so Plex can update resume/watched
 state. Stopping releases remux/transcode sessions even if the final timeline report fails.
@@ -179,13 +200,21 @@ Favorites map to Plex's five-star user rating; removing a favorite clears that r
 
 ### Throughput measurement
 
-The provider uses Spool's native authenticated **HTTP Range** probe on an existing media file,
-not a synthetic Plex speed-test endpoint or a transcoding session. It inspects up to 32 entries
-per movie, TV, or music library and selects an accessible media part of at least 4 MiB. Spool
-performs bounded native range downloads, verifies partial-content responses, measures throughput,
-and selects one, two, or four concurrent range requests. No binary response enters JavaScript.
-An empty library, no eligible part in that sample, or a server/proxy that does not honor ranges
-leaves the previous measurement unchanged; playback remains available with the quality order above.
+The provider uses Spool's native authenticated **HTTP Range** probe on an existing media file
+with `download=1`, not a synthetic Plex speed-test endpoint or a transcoding session.
+It inspects at most eight movie, TV or music libraries and 32 entries per library,
+and probes at most three distinct accessible media parts of at least 4 MiB.
+If one part returns HTTP 403/404/416/500 or an invalid range sample, another
+eligible part may be used; the same URL is never retried. Authentication, network
+and cancellation failures stop selection immediately. Exhaustion reports the
+actual final failure, not a fabricated measurement.
+Spool performs bounded native range downloads, verifies partial-content responses,
+measures throughput, and selects one, two, or four concurrent range requests.
+No binary response enters JavaScript. A failed test retains the previous
+measurement. New automatic tests wait for idle, but an in-flight bounded test
+finishes if playback starts. Explicit refresh may measure during playback;
+Auto shows measuring, completed or unavailable rather than endlessly cancelling
+and reverting to a deferred status.
 This requires negotiated `spool.speed-test` version 1. It is intentionally absent
 from the legacy capability list so older API 0.2 hosts do not show an unsupported
 probe control. Baseline login, browsing, playback and reporting remain available

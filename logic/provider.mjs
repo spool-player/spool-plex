@@ -763,26 +763,51 @@ export function createSource(configuration, sourceHost) {
         speedTest: (args, host) => {
             if (extensions['spool.speed-test'] !== 1)
                 throw new Error('unsupported_extension');
+            const probeHeaders = headers(device, token);
+            delete probeHeaders.Accept;
+            const seen = new Set();
+            let probes = 0;
+            let failure = null;
             return request(host, 'GET', '/library/sections').then(result => {
                 const types = { movie: 1, show: 4, artist: 10 };
-                const libraries = (container(result).Directory || []).filter(d => types[d.type]);
+                const libraries = (container(result).Directory || []).filter(d => types[d.type]).slice(0, 8);
                 function find(index) {
-                    if (index >= libraries.length)
-                        throw new Error('speed_test_unavailable');
+                    if (index >= libraries.length || probes >= 3)
+                        throw failure || new Error('speed_test_unavailable');
                     const library = libraries[index];
                     return request(host, 'GET', '/library/sections/' + segment(String(library.key)) + '/all',
                         { type: types[library.type], 'X-Plex-Container-Start': 0, 'X-Plex-Container-Size': 32 }).then(result => {
+                        const candidates = [];
                         for (const row of container(result).Metadata || []) {
                             for (const media of row.Media || []) {
                                 for (const part of media.Part || []) {
                                     if (Number(part.size) >= 4 * 1024 * 1024 && part.exists !== false
-                                        && part.accessible !== false && /^\/library\/parts\//.test(part.key || ''))
-                                        return host.speedTest({ url: server + part.key, headers: headers(device, token),
-                                            range: true });
+                                        && part.accessible !== false && /^\/library\/parts\//.test(part.key || '')
+                                        && !seen.has(part.key)) {
+                                        seen.add(part.key);
+                                        candidates.push(part.key);
+                                    }
                                 }
                             }
                         }
-                        return find(index + 1);
+                        function probe(candidate) {
+                            if (candidate >= candidates.length)
+                                return find(index + 1);
+                            if (probes >= 3)
+                                throw failure || new Error('speed_test_unavailable');
+                            ++probes;
+                            return host.speedTest({ url: partUrl(candidates[candidate]), headers: probeHeaders,
+                                range: true }).then(value => value, error => {
+                                // A different part can be usable when one file is missing,
+                                // denied, or cannot supply a valid range. Never retry a URL,
+                                // account denial, transport failure, or cancelled operation.
+                                if (!/^http_(403|404|416|500)$/.test(code(error)) && code(error) !== 'invalid_sample')
+                                    throw error;
+                                failure = error;
+                                return probe(candidate + 1);
+                            });
+                        }
+                        return probe(0);
                     });
                 }
                 return find(0);

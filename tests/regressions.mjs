@@ -116,7 +116,7 @@ export function run() {
                     'the remux session is released even when its final timeline fails');
             });
         });
-    }).then(authenticate).then(browse).then(probe).then(baselineRepairs);
+    }).then(authenticate).then(browse).then(probe).then(probeSourceFailures).then(baselineRepairs);
 }
 
 function authenticate() {
@@ -180,11 +180,48 @@ function probe() {
         return Promise.resolve({ bitrate: 18000000, parallelRequests: 2 });
     };
     return pms.source.speedTest({}, pms.host).then(() => {
-        check(endpoint.range === true && endpoint.url === origin + media.Part[0].key
+        check(endpoint.range === true && endpoint.url === origin + media.Part[0].key + '?download=1'
             && endpoint.headers['X-Plex-Token'] === 'secret', 'probe skips tiny/offline files and ranges real media natively');
         const empty = fixture(() => response({ Directory: [{ key: '3', type: 'photo' }] }), { 'spool.speed-test': 1 });
         return fails(() => empty.source.speedTest({}, empty.host), 'speed_test_unavailable');
     });
+}
+
+function probeSourceFailures() {
+    const parts = ['first', 'first', 'second', 'third', 'fourth'].map(id =>
+        ({ key: '/library/parts/' + id + '/file', size: 8388608 }));
+    const setup = () => fixture(path => {
+        if (path === '/library/sections')
+            return response({ Directory: [{ key: '1', type: 'movie' }] });
+        if (path === '/library/sections/1/all')
+            return response({ Metadata: [{ Media: [{ Part: parts }] }] });
+        throw new Error('unexpected probe metadata');
+    }, { 'spool.speed-test': 1 });
+    const usable = setup();
+    const calls = [];
+    usable.host.speedTest = options => {
+        calls.push(options.url);
+        check(!options.headers.Accept, 'binary downloads must not request JSON');
+        return calls.length === 1 ? Promise.reject(new Error('http_500'))
+            : Promise.resolve({ bitrate: 18000000, parallelRequests: 2 });
+    };
+    return usable.source.speedTest({}, usable.host).then(result => {
+        check(result.bitrate === 18000000 && calls.length === 2
+            && calls[0].indexOf('/first/') >= 0 && calls[1].indexOf('/second/') >= 0,
+            'one unreadable part cannot prevent a distinct eligible source from measuring');
+        const exhausted = setup();
+        let attempts = 0;
+        exhausted.host.speedTest = () => { ++attempts; return Promise.reject(new Error('http_500')); };
+        return fails(() => exhausted.source.speedTest({}, exhausted.host), 'http_500').then(() =>
+            check(attempts === 3, 'source selection never probes more than three distinct parts'));
+    }).then(() => ['action_cancelled', 'http_401', 'network_error'].reduce((pending, code) =>
+        pending.then(() => {
+            const fatal = setup();
+            let attempts = 0;
+            fatal.host.speedTest = () => { ++attempts; return Promise.reject(new Error(code)); };
+            return fails(() => fatal.source.speedTest({}, fatal.host), code).then(() =>
+                check(attempts === 1, 'account, transport and cancellation failures do not start another probe'));
+        }), Promise.resolve()));
 }
 
 function baselineRepairs() {
