@@ -3,7 +3,7 @@
 import { parseXml } from './xml.mjs';
 import { container, item, milliseconds, ticks, trickplay } from './items.mjs';
 import { createRemoteQueues } from './remote-queue.mjs';
-const dependencies = ['spool.remote-targets', 'spool.http-metadata', 'spool.origin-grants'];
+const dependencies = ['remoteTargets', 'httpMetadata', 'originGrants'];
 const navigation = { moveUp: 'Up', moveDown: 'Down', moveLeft: 'Left', moveRight: 'Right', select: 'Select',
     back: 'Back', home: 'Home', contextMenu: 'Context menu', music: 'Now playing music' };
 function text(value) { return value === undefined || value === null ? '' : String(value); }
@@ -46,7 +46,7 @@ export function createRemote(options) {
     let acceptedPoll = 0;
     const queues = createRemoteQueues({ server: options.server });
     function guard() {
-        if (dependencies.some(id => options.extensions[id] !== 1)) throw new Error('unsupported_extension');
+        if (dependencies.some(id => options.capabilities[id] !== true)) throw new Error('unsupported_capability');
     }
     function current(peer, ticket) {
         if (attached !== peer || ticket !== epoch) throw new Error('remote_target_changed');

@@ -7,7 +7,7 @@ credits Plex has marked.
 
 | | |
 | --- | --- |
-| `manifest.json` | Identity, capabilities, screens and item actions (provider API 0.2) |
+| `manifest.json` | Identity, capabilities, screens and item actions (package format 3) |
 | `logic/provider.mjs` | Sign-in, choosing a reachable address, catalogue, playback, item actions |
 | `logic/items.mjs` | Plex JSON to Spool's item shape; markers to segments |
 | `logic/profile.mjs` | Quality precedence, codec restrictions and Plex transcode parameters |
@@ -86,7 +86,7 @@ logs describe selection indexes and accepted protocol only.
 
 ### Plex Home and device sign-in
 
-With `spool.account-activation` version 1, linking first lists Plex Home users.
+With `accountActivation` version 1, linking first lists Plex Home users.
 Selecting a member verifies their PIN where required, fetches that member's
 Plex.tv identity/resources anew, and offers only their servers. A different
 member is a separate Spool account, never a relabeled cached account.
@@ -123,8 +123,8 @@ active. Same-identity accounts on other servers may reuse the core's bounded,
 memory-only family proof, but validate the member token and resolve each server's
 own resource token. Resource refresh never silently grants newly advertised
 origins. The notification socket starts on the first normal post-commit PMS call.
-Old API 0.2 hosts keep ordinary linked login and hide Home controls; protected
-Home configurations fail closed and require a Spool update.
+The accountActivation capability gates Home controls; protected Home configurations
+fail closed when it is unavailable.
 
 Policy follows Plex's [fast user switching documentation](https://support.plex.tv/articles/204232453-fast-user-switching/)
 and its [Home XML client](https://github.com/plexinc/plex-for-kodi/blob/master/lib/_included_packages/plexnet/myplexaccount.py).
@@ -242,7 +242,7 @@ measurement. New automatic tests wait for idle, but an in-flight bounded test
 finishes if playback starts. Explicit refresh may measure during playback;
 Auto shows measuring, completed or unavailable rather than endlessly cancelling
 and reverting to a deferred status.
-This requires negotiated `spool.speed-test` version 1; application version strings
+This requires negotiated `speedTest` version 1; application version strings
 never imply feature support. Current provider builds require the current Spool host
 contract, including native logging; older hosts are not supported. Missing declared
 host features and server endpoint/permission failures are separate conditions.
@@ -265,17 +265,17 @@ identity of each occurrence when the same media appears more than once.
 
 ### Optional catalogue and queue features
 
-With negotiated `spool.suggestions`, suggestions flatten accessible movie/show hubs from `/hubs`
+With negotiated `suggestions`, suggestions flatten accessible movie/show hubs from `/hubs`
 in server order, without duplicates or Continue Watching/On Deck results. Empty recommendations
 stay empty rather than borrowing resume rows.
 
-`spool.item-actions` loads policy only when an item menu opens. Known permission denials suppress
+`itemActions` loads policy only when an item menu opens. Known permission denials suppress
 actions; absent granular permission metadata is not an authorization grant, and the user-initiated
 server operation remains authoritative. Collection create/add/rename and explicit
 sort choices live in the provider picker; manifest playlist/delete actions retain
 the same provider-side authorization checks.
 
-`spool.collection-editing` lists playlist occurrences and regular collection members in native
+`collectionEditing` lists playlist occurrences and regular collection members in native
 order. Playlist removal/movement uses the exact `playlistItemID`, not the media rating key.
 Collection entries use member rating keys. Smart, radio and known read-only lists cannot be edited;
 collection movement requires existing custom sort. Moving an entry does not silently change sort
@@ -283,7 +283,7 @@ or fetch an entire container to translate its destination. Server 403 responses 
 editing of that container for the source lifetime. Unknown or changed permissions still require
 server authorization; collection ownership from a fresh Plex resource listing is retained.
 
-`spool.playback-queue-reporting` prepares a private PMS play queue in a source-owned background job.
+`playbackQueueReporting` prepares a private PMS play queue in a source-owned background job.
 Reports continue normally while preparation runs and include PMS queue/occurrence IDs only once a
 matching revision is verified. Duplicate occurrences remain distinct; membership/order revisions
 reuse the existing server queue. A mixed audio/video queue reports a nonfatal unavailable status
@@ -297,7 +297,7 @@ protocol fixtures also cover stale generations and uncertain mutations.
 
 ### Outbound Plex Companion
 
-`spool.remote-targets` requires both `spool.http-metadata` and `spool.origin-grants`.
+`remoteTargets` requires both `httpMetadata` and `originGrants`.
 Opening the chooser combines PMS `/clients` with Plex.tv resources for the **active**
 account identity. Accounts linked before active-account credentials were retained use
 PMS discovery only; relink normally to enable cloud discovery. A linked full-account

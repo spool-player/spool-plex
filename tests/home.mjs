@@ -2,8 +2,8 @@
 import { createSource } from '../logic/provider.mjs';
 const origin = 'https://home.example:32400';
 const second = 'https://second.example:32400';
-const extensions = { 'spool.account-activation': 1, 'spool.remote-targets': 1,
-    'spool.http-metadata': 1, 'spool.origin-grants': 1 };
+const capabilities = { 'accountActivation': true, 'remoteTargets': true,
+    'httpMetadata': true, 'originGrants': true };
 function check(value, message) { if (!value) throw new Error('home: ' + message); }
 function fails(action, expected) {
     return Promise.resolve().then(action).then(() => { throw new Error('home: expected ' + expected); },
@@ -16,7 +16,7 @@ function fixture() {
     const json = value => ({ status: 200, body: JSON.stringify(value) });
     const xml = body => ({ status: 200, body: body });
     const host = {
-        device: { id: 'home-device', name: 'Home fixture', version: '1' }, extensions: extensions,
+        device: { id: 'home-device', name: 'Home fixture', version: '1' }, capabilities: capabilities,
         delay: () => new Promise(() => {}),
         emit: (event, payload) => state.events.push({ event: event, payload: payload }),
         socket: (url, options) => { const socket = { url: url, options: options, closed: false,
@@ -213,14 +213,14 @@ function automatic() {
 }
 function legacyAndCancellation() {
     const f = fixture();
-    const legacy = Object.assign({}, f.host); delete legacy.extensions;
+    const legacy = Object.assign({}, f.host); delete legacy.capabilities;
     return fails(() => createSource(config(), legacy), 'activation_host_required').then(() => {
         check(f.state.calls.length === 0 && f.state.sockets.length === 0, 'legacy protected configuration fails before authentication');
         const login = createSource({}, legacy);
         return login.pinPoll({ id: '7' }, legacy).then(result => {
             check(!result.homeUsers && result.servers[0].token === 'full-pms', 'ordinary linked login works on old hosts without Home');
             check(!f.state.calls.some(call => call.path.indexOf('/api/home') === 0), 'old host never exposes Home switching');
-            return fails(() => login.homeSelect({}, legacy), 'unsupported_extension');
+            return fails(() => login.homeSelect({}, legacy), 'unsupported_capability');
         });
     }).then(() => {
         const pms = createSource({ server: origin, token: 'member-pms', serverId: 'machine' }, f.host);

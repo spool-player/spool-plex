@@ -29,8 +29,8 @@ export function run() {
         'readonly': { ratingKey: 'readonly', type: 'playlist', readOnly: true }
     };
     const host = {
-        device: {}, emit: () => {}, extensions: {
-            'spool.suggestions': 1, 'spool.item-actions': 1, 'spool.collection-editing': 1
+        device: {}, emit: () => {}, capabilities: {
+            'suggestions': true, 'itemActions': true, 'collectionEditing': true
         },
         http: (url, options) => {
             const path = url.slice('http://pms'.length).split('?')[0];
@@ -144,9 +144,9 @@ export function run() {
         check(!info.removable, '403 invalidates policy and disables subsequent editing');
         const legacy = createSource({ server: 'http://pms', token: 'server-token' }, { device: {} });
         const before = calls.length;
-        return fails(() => legacy.suggestions({}, host), 'unsupported_extension')
-            .then(() => fails(() => legacy.collectionInfo({ containerId: 'p' }, host), 'unsupported_extension'))
-            .then(() => fails(() => legacy.runItemAction({ action: 'collection', itemId: '10' }, host), 'unsupported_extension'))
-            .then(() => check(calls.length === before, 'unnegotiated extensions never perform HTTP'));
+        return fails(() => legacy.suggestions({}, host), 'unsupported_capability')
+            .then(() => fails(() => legacy.collectionInfo({ containerId: 'p' }, host), 'unsupported_capability'))
+            .then(() => fails(() => legacy.runItemAction({ action: 'collection', itemId: '10' }, host), 'unsupported_capability'))
+            .then(() => check(calls.length === before, 'unnegotiated capabilities never perform HTTP'));
     });
 }

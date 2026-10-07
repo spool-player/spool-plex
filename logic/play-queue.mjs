@@ -23,7 +23,7 @@ export function directory(items) {
  * Source teardown cancels the actual native HTTP requests. */
 export function createPlayQueueReporter(options) {
     const host = options.host;
-    const enabled = host.extensions && host.extensions['spool.playback-queue-reporting'] === 1;
+    const enabled = host.capabilities && host.capabilities['playbackQueueReporting'] === true;
     let generation = 0;
     let desired = null;
     let index = -1;

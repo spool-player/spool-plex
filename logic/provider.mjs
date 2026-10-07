@@ -110,31 +110,25 @@ export function createSource(configuration, sourceHost) {
     let server = configuration.server || '';
     const sessions = {};
     let disconnect = null;
-    const implementedExtensions = ['spool.speed-test', 'spool.suggestions', 'spool.item-actions',
-        'spool.collection-editing', 'spool.playback-queue-reporting', 'spool.remote-targets',
-        'spool.http-metadata', 'spool.origin-grants', 'spool.account-activation'];
-    const negotiated = {};
-    for (const id of implementedExtensions) {
-        if (sourceHost.extensions && sourceHost.extensions[id] === 1)
-            negotiated[id] = 1;
-    }
-    if (!negotiated['spool.http-metadata'] || !negotiated['spool.origin-grants'])
-        delete negotiated['spool.remote-targets'];
-    const extensions = Object.freeze(negotiated);
-    const missingHost = implementedExtensions.filter(id => !extensions[id]);
-    if (configuration.homeProtected === true && !extensions['spool.account-activation'])
+    const declared = ["search", "userState", "reporting", "segments", "streamQuality", "trickplay", "downloads", "downloadTranscode", "speedTest", "suggestions", "itemActions", "collectionEditing", "playbackQueueReporting", "remoteTargets", "httpMetadata", "originGrants", "accountActivation"];
+    const negotiated = Object.fromEntries(declared.filter(id =>
+        sourceHost.capabilities && sourceHost.capabilities[id] === true).map(id => [id, true]));
+    if (!negotiated['httpMetadata'] || !negotiated['originGrants'])
+        delete negotiated['remoteTargets'];
+    const capabilities = Object.freeze(negotiated);
+    if (configuration.homeProtected === true && !capabilities['accountActivation'])
         throw new Error('activation_host_required');
     if (configuration.homeFamilyId && !configuration.userId
         || configuration.homeProtected === true && !configuration.homeFamilyId)
         throw new Error('invalid_config');
-    let active = !configuration.server || !extensions['spool.account-activation'];
+    let active = !configuration.server || !capabilities['accountActivation'];
     let stopped = false;
     const denied = new Set();
     let policy = null;
 
-    function requireExtension(id) {
-        if (extensions[id] !== 1)
-            throw new Error('unsupported_extension');
+    function requireCapability(id) {
+        if (capabilities[id] !== true)
+            throw new Error('unsupported_capability');
     }
 
     function tv(host, method, path, parameters, userToken) {
@@ -207,7 +201,7 @@ export function createSource(configuration, sourceHost) {
     const queueReporter = createPlayQueueReporter({ host: sourceHost,
         request: (method, path, parameters) => request(sourceHost, method, path, parameters),
         baseUrlLength: () => server.length });
-    const makeRemote = () => createRemote({ host: sourceHost, extensions: extensions, request: request, tv: tv,
+    const makeRemote = () => createRemote({ host: sourceHost, capabilities: capabilities, request: request, tv: tv,
         server: () => server, serverId: serverId, token: token,
         activeAccountToken: activeAccountToken,
         linkedAccountToken: configuration.linkedAccountToken || '' });
@@ -224,7 +218,7 @@ export function createSource(configuration, sourceHost) {
             disconnect = connect(sourceHost, server.replace(/^http/i, 'ws') + '/:/websockets/notifications',
                 headers(device, token));
     }
-    const home = createHome({ configuration: configuration, extensions: extensions, tv: tv,
+    const home = createHome({ configuration: configuration, capabilities: capabilities, tv: tv,
         headers: value => headers(device, value), servers: serverResources,
         emit: (event, value) => sourceHost.emit(event, value),
         refreshServer: (host, target, activeToken) => {
@@ -354,7 +348,7 @@ export function createSource(configuration, sourceHost) {
             if (['movie', 'episode', 'track', 'album', 'clip'].indexOf(raw.type) >= 0
                 && !denied.has('playlist'))
                 actions.push({ id: 'playlist', label: 'Add to playlist', icon: 'playlist_add' });
-            if (extensions['spool.item-actions'] === 1 && manageCollections) {
+            if (capabilities['itemActions'] === true && manageCollections) {
                 if (collectionItemTypes[raw.type] && raw.librarySectionID !== undefined && !denied.has('collection'))
                     actions.push({ id: 'collection', label: 'Add to collection', icon: 'library_add' });
                 if (collection && raw.librarySectionID !== undefined && writable(raw) && !denied.has('edit:' + args.itemId)) {
@@ -408,9 +402,8 @@ export function createSource(configuration, sourceHost) {
     if (active) openSocket();
 
     const source = {
-        extensionStatus: () => ({ enabled: extensions, missingHost: missingHost }),
         describe: () => {
-            const description = { extensions: extensions };
+            const description = { capabilities: capabilities };
             if (home.activation) description.activation = home.activation;
             if (active && server && token)
                 description.artwork = server + '/photo/:/transcode?width={width}&height=4320&minSize=0&upscale=0&url={tag}&X-Plex-Token='
@@ -551,7 +544,7 @@ export function createSource(configuration, sourceHost) {
                 });
         },
         suggestions: (args, host) => {
-            requireExtension('spool.suggestions');
+            requireCapability('suggestions');
             const limit = Math.min(Math.max(args.limit || 40, 1), 60);
             return request(host, 'GET', '/hubs', { count: limit }).then(result => {
                 const rows = [];
@@ -578,15 +571,15 @@ export function createSource(configuration, sourceHost) {
             });
         },
         itemActions: (args, host) => {
-            requireExtension('spool.item-actions');
+            requireCapability('itemActions');
             return actionPolicy(host, args).then(result => ({ actions: result.actions }));
         },
         collectionInfo: (args, host) => {
-            requireExtension('spool.collection-editing');
+            requireCapability('collectionEditing');
             return collectionState(host, args.containerId).then(state => state.info);
         },
         collectionEntries: (args, host) => {
-            requireExtension('spool.collection-editing');
+            requireCapability('collectionEditing');
             return collectionState(host, args.containerId).then(state =>
                 list(host, state.path + (state.playlist ? '/items' : '/children'), args).then(result => {
                     for (const row of result.items) {
@@ -599,7 +592,7 @@ export function createSource(configuration, sourceHost) {
                 }));
         },
         collectionRemove: (args, host) => {
-            requireExtension('spool.collection-editing');
+            requireCapability('collectionEditing');
             return collectionState(host, args.containerId).then(state => {
                 ensureEditable(state);
                 return mutation(host, 'DELETE', state.path + '/items/' + segment(args.entryId), {},
@@ -607,7 +600,7 @@ export function createSource(configuration, sourceHost) {
             });
         },
         collectionMove: (args, host) => {
-            requireExtension('spool.collection-editing');
+            requireCapability('collectionEditing');
             if (!Number.isSafeInteger(args.index) || args.index < 0
                 || (args.index === 0 ? args.afterEntryId !== null
                     : typeof args.afterEntryId !== 'string' || !args.afterEntryId)
@@ -768,8 +761,8 @@ export function createSource(configuration, sourceHost) {
             });
         },
         speedTest: (args, host) => {
-            if (extensions['spool.speed-test'] !== 1)
-                throw new Error('unsupported_extension');
+            if (capabilities['speedTest'] !== true)
+                throw new Error('unsupported_capability');
             const probeHeaders = headers(device, token);
             delete probeHeaders.Accept;
             const seen = new Set();
@@ -879,7 +872,7 @@ export function createSource(configuration, sourceHost) {
         // Item menu actions from manifest.json; `pick` shows ui/Picker.qml.
         runItemAction: (args, host) => {
             if (['collection', 'renameCollection', 'collectionSort'].includes(args.action))
-                requireExtension('spool.item-actions');
+                requireCapability('itemActions');
             return actionPolicy(host, args).then(({ actions, raw }) => {
                 if (!actions.some(action => action.id === args.action))
                     throw new Error('permission_denied');
@@ -942,7 +935,7 @@ export function createSource(configuration, sourceHost) {
         targets: (args, host) => {
             const collections = args.kind === 'collection';
             if (collections)
-                requireExtension('spool.item-actions');
+                requireCapability('itemActions');
             return actionPolicy(host, args).then(({ actions, raw }) => {
                 if (!actions.some(action => action.id === (collections ? 'collection' : 'playlist')))
                     throw new Error('permission_denied');
@@ -984,7 +977,7 @@ export function createSource(configuration, sourceHost) {
     }
     // Defense in depth: even custom baseline operations cannot use saved
     // credentials while a prepared Home source is private/locked.
-    const utilities = ['describe', 'extensionStatus', 'activate', 'signOut', 'pinStart', 'pinPoll', 'homeSelect',
+    const utilities = ['describe', 'activate', 'signOut', 'pinStart', 'pinPoll', 'homeSelect',
         'identify', 'connect'];
     for (const name of Object.keys(source)) {
         if (utilities.includes(name)) continue;

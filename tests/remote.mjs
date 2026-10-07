@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import { createSource } from '../logic/provider.mjs';
 import { run as xml } from './xml.mjs';
-const extensions = { 'spool.remote-targets': 1, 'spool.http-metadata': 1, 'spool.origin-grants': 1 };
+const capabilities = { 'remoteTargets': true, 'httpMetadata': true, 'originGrants': true };
 const server = 'https://pms.test:32400';
 const player = 'https://player.test:32433';
 function check(value, message) { if (!value) throw new Error('remote contract: ' + message); }
@@ -45,7 +45,7 @@ function fixture(configuration, offered) {
         + '" playQueueVersion="' + state.version + '" playQueueItemID="' + state.entry
         + '" controllable="' + state.controls + '" mediaIndex="' + state.mediaIndex
         + '" subtitleStreamID="904" audioStreamID="901"/></MediaContainer>';
-    const host = { device: { id: 'self', name: 'Spool fixture' }, extensions: offered || extensions, emit: () => {},
+    const host = { device: { id: 'self', name: 'Spool fixture' }, capabilities: offered || capabilities, emit: () => {},
         http: (url, options) => {
             const base = /^(https?:\/\/[^/]+)/.exec(url)[1];
             const path = url.slice(base.length).split('?')[0];
@@ -282,9 +282,9 @@ export function run() {
             f.state.identity = 'peer'; f.state.unauthorized = true;
             return fails(readState, 'target_unauthorized');
         }).then(() => {
-            const old = fixture({}, { 'spool.remote-targets': 1 });
-            check(!old.source.describe().extensions['spool.remote-targets'], 'dependency loss withdraws optional remote extension');
-            return fails(() => old.source.remoteTargets({}, old.host), 'unsupported_extension')
+            const old = fixture({}, { 'remoteTargets': true });
+            check(!old.source.describe().capabilities['remoteTargets'], 'dependency loss withdraws optional remote extension');
+            return fails(() => old.source.remoteTargets({}, old.host), 'unsupported_capability')
                 .then(() => check(old.calls.length === 0, 'unsupported remote makes no HTTP request'));
         }).then(() => {
             const pmsOnly = fixture({ activeAccountToken: '', linkedAccountToken: 'linked-token' });
