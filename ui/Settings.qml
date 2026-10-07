@@ -7,7 +7,7 @@ FocusScope {
     id: root
 
     property var provider
-    property bool homeSupported: false
+    readonly property bool homeSupported: provider && provider.capabilities.accountActivation === true
     property var home: ({
                             available: false,
                             writable: false,
@@ -22,11 +22,8 @@ FocusScope {
     }
 
     function loadHome() {
-        provider.request("extensionStatus").then(status => {
-            homeSupported = status.enabled["spool.account-activation"] === 1
-            if (homeSupported)
-                return provider.request("homeSettings").then(result => home = result)
-        }).catch(() => error = "Couldn't load Plex Home settings.")
+        if (homeSupported)
+            provider.request("homeSettings").then(result => home = result).catch(() => error = "Couldn't load Plex Home settings.")
     }
 
     function toggleAutomatic() {
@@ -60,11 +57,6 @@ FocusScope {
             text: "Plex settings"
             font.pixelSize: Metrics.titleSizePx
             font.weight: Font.DemiBold
-        }
-
-        ProviderCompatibilityNotice {
-            Layout.fillWidth: true
-            provider: root.provider
         }
 
         AppText {

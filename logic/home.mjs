@@ -14,7 +14,7 @@ function identity(user) {
 
 export function createHome(options) {
     const configuration = options.configuration;
-    const enabled = options.extensions['spool.account-activation'] === 1;
+    const enabled = options.capabilities['accountActivation'] === true;
     const configured = Boolean(configuration.homeFamilyId);
     const activation = configured ? { familyId: text(configuration.homeFamilyId), identityId: text(configuration.userId) } : null;
     let authenticated = false;
@@ -22,7 +22,7 @@ export function createHome(options) {
     let managed = configuration.homeManaged === true;
     let stopped = false;
     function current() { if (stopped) throw new Error('cancelled'); }
-    function supported() { if (!enabled) throw new Error('unsupported_extension'); }
+    function supported() { if (!enabled) throw new Error('unsupported_capability'); }
     function xml(host, method, path, token, pin) {
         const headers = options.headers(token);
         headers.Accept = 'application/xml';

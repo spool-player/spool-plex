@@ -116,27 +116,22 @@ function account(down) {
     return { pms: pms, source: source };
 }
 
-function extensionCompatibility() {
+function capabilityAvailability() {
     step = 'optional speed extension';
     const legacy = account();
-    const current = createSource({}, { device: device, extensions: { 'spool.speed-test': 1, 'future.feature': 1 } });
-    const wrong = createSource({}, { device: device, extensions: { 'spool.speed-test': 2 } });
-    const stringVersion = createSource({}, { device: device, extensions: { 'spool.speed-test': '1' } });
-    check(Object.keys(legacy.source.describe().extensions).length === 0
-        && legacy.source.extensionStatus().missingHost.indexOf('spool.suggestions') >= 0,
-        'an old host advertises no optional features regardless of device version');
-    check(current.describe().extensions['spool.speed-test'] === 1
-        && Object.keys(current.extensionStatus().enabled).join(',') === 'spool.speed-test'
-        && current.extensionStatus().missingHost.indexOf('spool.speed-test') < 0,
-        'only implemented exact versions are offered');
-    check(Object.keys(wrong.extensionStatus().enabled).length === 0
-        && Object.keys(stringVersion.extensionStatus().enabled).length === 0,
-        'higher versions and strings do not negotiate version one');
+    const current = createSource({}, { device: device, capabilities: { 'speedTest': true, 'future.feature': 1 } });
+    const wrong = createSource({}, { device: device, capabilities: { 'speedTest': 2 } });
+    const stringVersion = createSource({}, { device: device, capabilities: { 'speedTest': '1' } });
+    check(Object.keys(legacy.source.describe().capabilities).length === 0, 'absent declarations disable optional operations');
+    check(current.describe().capabilities.speedTest === true
+        && !current.describe().capabilities['future.feature'], 'only known boolean declarations are offered');
+    check(Object.keys(wrong.describe().capabilities).length === 0
+        && Object.keys(stringVersion.describe().capabilities).length === 0, 'numbers and strings cannot enable capabilities');
     let probes = 0;
     legacy.pms.host.speedTest = () => { ++probes; return Promise.resolve({}); };
-    return fails(() => legacy.source.speedTest({}, legacy.pms.host), 'unsupported_extension')
-        .then(() => fails(() => wrong.speedTest({}, legacy.pms.host), 'unsupported_extension'))
-        .then(() => fails(() => stringVersion.speedTest({}, legacy.pms.host), 'unsupported_extension'))
+    return fails(() => legacy.source.speedTest({}, legacy.pms.host), 'unsupported_capability')
+        .then(() => fails(() => wrong.speedTest({}, legacy.pms.host), 'unsupported_capability'))
+        .then(() => fails(() => stringVersion.speedTest({}, legacy.pms.host), 'unsupported_capability'))
         .then(() => check(legacy.pms.calls.length === 0 && probes === 0,
             'unsupported calls cannot inspect libraries or start native probes'));
 }
@@ -421,5 +416,5 @@ export function run() {
             { state: 'stopped', ratingKey: '10' }, { state: 'playing', ratingKey: '11' }] } }, emit, () => later++);
         check(later === 1, 'finished scans become one later change');
         check(events.length === 1 && events[0][1].itemId === '10', 'playback stopped elsewhere changes that item');
-    }).then(previewContracts).then(playbackFollowupContracts).then(downloadContracts).then(regressions).then(extensionCompatibility).then(catalogue).then(playQueue).then(remoteContracts).then(home);
+    }).then(previewContracts).then(playbackFollowupContracts).then(downloadContracts).then(regressions).then(capabilityAvailability).then(catalogue).then(playQueue).then(remoteContracts).then(home);
 }

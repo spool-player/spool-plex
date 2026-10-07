@@ -23,8 +23,8 @@ const origin = 'https://server.plex.direct:32400';
 const media = { id: 2, bitrate: 40000, container: 'mkv', Part: [{ id: 3, key: '/library/parts/3/1/file.mkv',
     size: 8388608, Stream: [{ streamType: 1, codec: 'hevc', index: 0, width: 3840, height: 2160 }] }] };
 const movie = { ratingKey: '1', type: 'movie', title: 'Film', duration: 7200000, Media: [media] };
-function fixture(handler, extensions) {
-    const host = { device: { id: 'device' }, extensions: extensions, emit: () => {}, delay: () => new Promise(() => {}),
+function fixture(handler, capabilities) {
+    const host = { device: { id: 'device' }, capabilities: capabilities, emit: () => {}, delay: () => new Promise(() => {}),
         http: (url, options) => {
             const path = url.slice(url.indexOf('/', 8)).split('?')[0];
             if (path === '/library/metadata/1')
@@ -174,7 +174,7 @@ function probe() {
         if (path === '/library/sections/2/all')
             return response({ Metadata: [movie] });
         throw new Error('a speed test must not create a playback session');
-    }, { 'spool.speed-test': 1 });
+    }, { 'speedTest': true });
     pms.host.speedTest = value => {
         endpoint = value;
         return Promise.resolve({ bitrate: 18000000, parallelRequests: 2 });
@@ -182,7 +182,7 @@ function probe() {
     return pms.source.speedTest({}, pms.host).then(() => {
         check(endpoint.range === true && endpoint.url === origin + media.Part[0].key + '?download=1'
             && endpoint.headers['X-Plex-Token'] === 'secret', 'probe skips tiny/offline files and ranges real media natively');
-        const empty = fixture(() => response({ Directory: [{ key: '3', type: 'photo' }] }), { 'spool.speed-test': 1 });
+        const empty = fixture(() => response({ Directory: [{ key: '3', type: 'photo' }] }), { 'speedTest': true });
         return fails(() => empty.source.speedTest({}, empty.host), 'speed_test_unavailable');
     });
 }
@@ -196,7 +196,7 @@ function probeSourceFailures() {
         if (path === '/library/sections/1/all')
             return response({ Metadata: [{ Media: [{ Part: parts }] }] });
         throw new Error('unexpected probe metadata');
-    }, { 'spool.speed-test': 1 });
+    }, { 'speedTest': true });
     const usable = setup();
     const calls = [];
     usable.host.speedTest = options => {

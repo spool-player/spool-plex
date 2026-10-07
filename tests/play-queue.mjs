@@ -94,7 +94,7 @@ function fixture(settings) {
         throw new Error('unexpected_request');
     }
     const reporter = createPlayQueueReporter({
-        host: { extensions: { 'spool.playback-queue-reporting': 1 }, emit: (name, event) => {
+        host: { capabilities: { 'playbackQueueReporting': true }, emit: (name, event) => {
             check(name === 'playbackQueueStatus' && Object.keys(event).sort().join(',') === 'revision,state',
                 'queue events expose no credentials or server errors');
             events.push(event);
