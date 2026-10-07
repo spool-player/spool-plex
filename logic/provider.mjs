@@ -111,8 +111,11 @@ export function createSource(configuration, sourceHost) {
     const sessions = {};
     let disconnect = null;
     const declared = ["search", "userState", "reporting", "segments", "streamQuality", "trickplay", "downloads", "downloadTranscode", "speedTest", "suggestions", "itemActions", "collectionEditing", "playbackQueueReporting", "remoteTargets", "httpMetadata", "originGrants", "accountActivation"];
-    const negotiated = Object.fromEntries(declared.filter(id =>
-        sourceHost.capabilities && sourceHost.capabilities[id] === true).map(id => [id, true]));
+    const negotiated = {};
+    for (const id of declared) {
+        if (sourceHost.capabilities && sourceHost.capabilities[id] === true)
+            negotiated[id] = true;
+    }
     if (!negotiated['httpMetadata'] || !negotiated['originGrants'])
         delete negotiated['remoteTargets'];
     const capabilities = Object.freeze(negotiated);
