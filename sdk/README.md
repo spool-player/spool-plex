@@ -483,6 +483,20 @@ to resolution. Closing cancels the pending choice; it does not replace the detai
 route. Providers can compose sections within their screens (for example, an inline
 Quick Connect code underneath password sign-in).
 
+When Add profile or Sign in again targets a saved account, login QML receives
+`provider.arguments.setupContext` with `accountId`, `serverId`, `serverName`,
+`serverOrigin` and `purpose` (`addProfile` or `reconnect`). These are nonsecret
+identity hints, not authentication or permission grants. The source factory
+privately receives `{setupContext, setupAccount}`, where `setupAccount` is that
+provider's retained account configuration. Decide inside provider logic whether
+its owner/household session can authorize selecting another viewer; never expose
+it to QML or borrow the existing viewer's media permissions. A reconnect must
+complete as the original account/server. Providers may emit `configuration` from
+a draft before completing with public account/label/group/detail metadata; the
+host commits that private configuration only after successful activation.
+`ServerLogin.setupContextOperation` can name a provider operation returning
+`{server}` to skip address entry while preserving provider-owned base paths.
+
 `remoteTargets` supplies the shared device dropdown's target, state, command
 and queue data. Set a target's `customControls` when it also needs provider-owned
 QML. The host mounts `ui.picker` with `{kind: "remoteControls", targetId}` as a
