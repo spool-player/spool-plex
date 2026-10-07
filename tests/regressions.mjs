@@ -121,24 +121,30 @@ export function run() {
 
 function authenticate() {
     const other = 'https://other.plex.direct:32400';
+    let saved;
     const host = { device: { id: 'device' }, delay: () => new Promise(() => {}),
-        http: url => response({ machineIdentifier: url.startsWith(other) ? 'wrong-server' : 'machine' }) };
+        emit: (event, value) => { if (event === 'configuration') saved = value; },
+        http: url => {
+            const json = value => Promise.resolve({ status: 200, body: JSON.stringify(value) });
+            if (url.indexOf('/api/v2/pins/') >= 0) return json({ authToken: 'linked' });
+            if (url.indexOf('/api/v2/user') >= 0) return json({ id: 'u', title: 'User' });
+            if (url.indexOf('/api/v2/resources') >= 0) return json([
+                { provides: 'server', clientIdentifier: 'machine', accessToken: 'secret',
+                    connections: [{ uri: other }, { uri: origin }] }]);
+            return response({ machineIdentifier: url.startsWith(other) ? 'wrong-server' : 'machine' });
+        } };
     const source = createSource({}, host);
-    return source.connect({ user: { id: 'u', name: 'User' }, server: { id: 'machine', token: 'secret',
-        connections: [{ uri: other }, { uri: origin }] } }, host).then(account => {
-        check(account.configuration.server === origin, 'a different Plex server at an old IP is rejected');
-        return source.connect({ user: { id: 'u' }, address: 'plex.example.com/', server: { id: 'machine',
-            token: 'secret', connections: [{ uri: origin }] } }, host);
-    }).then(account => {
-        check(account.configuration.server === 'https://plex.example.com'
-            && account.configuration.connections.length === 2,
-            'a typed custom address is tried first as HTTPS and kept beside the advertised ones');
-        return source.connect({ user: { id: 'u' }, address: other, server: { id: 'machine', token: 'secret',
-            connections: [{ uri: origin }] } }, host);
-    }).then(account => {
-        check(account.configuration.server === origin, 'a typed address answering as another server is refused');
-        return fails(() => source.connect({ server: { id: 'machine', token: 'expired',
-            connections: [{ uri: origin }] } }, { http: () => response({}, 401), delay: host.delay }), 'server_unreachable');
+    return source.pinPoll({ id: '7' }, host).then(() => source.connect({ serverId: 'machine' }, host)).then(() => {
+        check(saved.server === origin, 'a different Plex server at an old IP is rejected');
+        return source.connect({ address: 'plex.example.com/', serverId: 'machine' }, host);
+    }).then(() => {
+        check(saved.server === 'https://plex.example.com' && saved.connections.length === 3,
+            'a typed custom address is tried first as HTTPS and kept beside all advertised ones');
+        return source.connect({ address: other, serverId: 'machine' }, host);
+    }).then(() => {
+        check(saved.server === origin, 'a typed address answering as another server is refused');
+        return fails(() => source.connect({ serverId: 'machine' },
+            { http: () => response({}, 401), delay: host.delay }), 'http_401');
     });
 }
 

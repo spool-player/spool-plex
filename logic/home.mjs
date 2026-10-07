@@ -34,7 +34,7 @@ export function createHome(options) {
         return host.http('https://plex.tv' + path, request).then(response => {
             current();
             if (response.status === 401 || response.status === 403)
-                throw new Error(method === 'POST' ? 'home_authentication_failed' : 'http_401');
+                throw new Error(method === 'POST' && pin ? 'home_authentication_failed' : 'http_401');
             if (response.status < 200 || response.status >= 300) throw new Error('http_' + response.status);
             return parseXml(response.body);
         });
@@ -67,6 +67,10 @@ export function createHome(options) {
                 if (root.name !== 'user' && root.name !== 'User' || text(switched.id) !== user.id
                         || !switched.authenticationToken) throw new Error('home_identity_mismatch');
                 return resources(host, user, switched.authenticationToken);
+            }).catch(error => {
+                if (code(error) === 'home_authentication_failed')
+                    throw new Error(user.homeProtected && pin ? 'invalid_pin' : 'http_401');
+                throw error;
             });
     }
     function grant(activeToken) {
@@ -89,8 +93,8 @@ export function createHome(options) {
     return {
         activation: activation,
         protected: configured && configuration.homeProtected === true,
-        // Device linking authenticates the full identity just now; old hosts keep
-        // this ordinary login, but never enumerate/switch Home identities.
+        // Device linking authenticates the linked identity; Home selection then
+        // establishes the member's separate resource authorization.
         linked: (host, profile, token) => {
             const user = identity(profile);
             const knownHome = configured || truth(configuration.homeProtected) || truth(configuration.homeManaged)
@@ -165,9 +169,7 @@ export function createHome(options) {
                 // An unprotected member keeps the token Plex already issued to
                 // this device; switching again is only needed once it is rejected.
                 const switched = () => switchUser(host, configuration.linkedAccountToken, member,
-                    args.answers && args.answers.pin || '').catch(error => {
-                    throw new Error(code(error) === 'home_authentication_failed' ? 'invalid_pin' : code(error));
-                });
+                    args.answers && args.answers.pin || '');
                 const resumed = member.homeProtected || !configuration.activeAccountToken ? switched()
                     : resources(host, member, configuration.activeAccountToken)
                         .catch(error => code(error) === 'http_401' ? switched() : Promise.reject(error));

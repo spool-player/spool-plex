@@ -19,22 +19,22 @@ FocusScope {
     property string error: ""
     property int generation: 0
     readonly property string trademark: "Plex and the Plex Play logo are trademarks of Plex and used under a license."
-    // Spool builds with a link-aware sign-in screen show plex.tv/link as a
-    // link and the notice as small print; older ones get both in the text.
-    readonly property bool hostLinks: typeof form.linkUrl === "string"
+    readonly property var setupContext: provider && provider.arguments ? provider.arguments.setupContext || ({}) : ({})
 
     readonly property var messages: ({
                                          "server_unreachable":
                                          "Couldn't reach that server. If it has a custom access URL, choose Enter a server address.",
                                          "network_error": "Couldn't reach Plex. Check your connection and try again.",
-                                         "http_401": "Plex rejected the sign-in. Request a new code.",
-                                         "invalid_config": "Saved Plex credentials are incomplete. Request a new code to reconnect.",
+                                         "http_401": "Plex sign-in expired. Request a new code to sign in again.",
+                                         "invalid_config":
+                                         "Saved Plex credentials are incomplete. Request a new code to reconnect.",
                                          "home_relink_required": "Link your Plex account again. Request a new code.",
+                                         "account_mismatch":
+                                         "Choose the same Plex user and server to reconnect this profile.",
                                          "origin_denied": "That server address is not allowed.",
-                                         "home_authentication_failed": "Plex rejected that PIN. Try again.",
+                                         "invalid_pin": "Plex rejected that PIN. Try again.",
                                          "home_identity_mismatch":
                                          "Plex returned a different identity. Link your account again.",
-                                         "unsupported_extension": "Update Spool to switch Plex Home users.",
                                          "invalid_address": "Enter an address such as plex.example.com.",
                                          "address_unreachable":
                                          "Couldn't reach a Plex server at that address. Check it and try again.",
@@ -71,6 +71,38 @@ FocusScope {
                 fail(reason)
         })
     }
+    function linked(result) {
+        busy = false
+        user = result.user
+        linkedUser = result.user
+        homeUsers = result.homeUsers || []
+        if (homeUsers.length) {
+            step = "home"
+            Qt.callLater(() => form.focusChoices())
+        } else {
+            showServers(result)
+        }
+    }
+
+    function resume() {
+        if (!setupContext.accountId || setupContext.purpose === "reconnect") {
+            newCode()
+            return
+        }
+        const ticket = ++generation
+        busy = true
+        provider.request("setupResume").then(result => {
+            if (ticket !== generation)
+                return
+            if (result.relink)
+                newCode()
+            else
+                linked(result)
+        }, reason => {
+            if (ticket === generation)
+                fail(reason)
+        })
+    }
 
     function checkCode() {
         const ticket = generation
@@ -83,15 +115,7 @@ FocusScope {
                                  poll.start()
                                  return
                              }
-                             user = result.user
-                             linkedUser = result.user
-                             homeUsers = result.homeUsers || []
-                             if (homeUsers.length) {
-                                 step = "home"
-                                 Qt.callLater(() => form.focusChoices())
-                             } else {
-                                 showServers(result)
-                             }
+                             linked(result)
                          }, reason => {
                              if (ticket !== generation)
                                  return
@@ -173,7 +197,6 @@ FocusScope {
         busy = true
         error = ""
         provider.request("homeSelect", {
-                             "user": linkedUser,
                              "userId": selectedHomeUser.id,
                              "pin": value
                          }).then(result => {
@@ -205,8 +228,7 @@ FocusScope {
             if (ticket !== generation)
                 return null
             return provider.request("connect", {
-                                        "server": server,
-                                        "user": root.user,
+                                        "serverId": server.id,
                                         "address": typedAddress || ""
                                     })
         }).then(account => {
@@ -221,6 +243,8 @@ FocusScope {
     }
 
     function back() {
+        if (busy)
+            provider.request("setupCancel").catch(() => {})
         if (step === "link")
             return false
         if (step === "address") {
@@ -254,11 +278,9 @@ FocusScope {
     }
 
     Component.onCompleted: {
-        if (hostLinks) {
-            form.linkUrl = "https://plex.tv/link"
-            form.footnote = trademark
-        }
-        newCode()
+        form.linkUrl = "https://plex.tv/link"
+        form.footnote = trademark
+        resume()
     }
     Component.onDestruction: {
         ++generation
@@ -288,11 +310,8 @@ FocusScope {
                                                                                          ? "PIN for "
                                                                                            + root.selectedHomeUser.name :
                                                                                            "Link your Plex account"
-        instructions: root.step === "link" ? (root.hostLinks ? "" : "Enter this code at plex.tv/link.\n"
-                                                               + root.trademark) : root.step === "home" || root.step
-                                             === "homePin"
-                                             ? "Plex Home PINs protect this Home, not unrelated accounts signed in to Spool." :
-                                               ""
+        instructions: root.step === "home" || root.step === "homePin"
+                      ? "Plex Home PINs protect this Home, not unrelated accounts signed in to Spool." : ""
         choices: root.step === "home" ? root.homeUsers.map(member => ({
             title: member.name + (member.homeProtected ? " · PIN required" : "")
         })) : root.step === "servers" ? root.servers.map(server => ({

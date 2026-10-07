@@ -377,7 +377,6 @@ export function run() {
         return fails(() => source.libraries({}, { device: device, http: () => respond({}, 401) }), 'http_401');
     }).then(() => {
         step = 'sign in';
-        const login = createSource({}, { device: device });
         const tv = server({
             'POST https://plex.tv/api/v2/pins': { id: 77, code: 'ABCD' },
             'GET https://plex.tv/api/v2/pins/77': { id: 77, authToken: 'user-token' },
@@ -388,21 +387,23 @@ export function run() {
                     connections: [{ uri: remote, local: false }, { uri: local, local: true }] }],
             ['GET ' + remote + '/']: { MediaContainer: { machineIdentifier: 'machine' } }
         }, [local]);
+        const login = createSource({}, { device: device, emit: tv.host.emit });
         return login.pinStart({}, tv.host).then(pin => {
             check(pin.id === '77' && pin.code === 'ABCD', 'a link code');
             return login.pinPoll({ id: pin.id }, tv.host);
         }).then(result => {
             check(result.user.id === '5' && result.user.name === 'Ann', 'the Plex user');
-            check(result.servers.length === 1 && result.servers[0].token === 'server-token'
-                && result.servers[0].connections[0].uri === local, 'servers only, local address first');
+            check(result.servers.length === 1 && !('token' in result.servers[0])
+                && result.servers[0].connections[0].uri === local, 'servers only, local address first, no credential in UI');
             const resources = tv.calls.filter(c => c.path === '/api/v2/resources').pop();
             check(resources.options.headers['X-Plex-Token'] === 'user-token', 'plex.tv is asked with the user token');
-            return login.connect({ server: result.servers[0], user: result.user }, tv.host);
+            return login.connect({ serverId: result.servers[0].id }, tv.host);
         }).then(result => {
             check(result.account === '5@machine' && result.group === 'machine' && result.label === 'Ann'
                 && result.detail === 'Home', 'account identity');
-            check(result.configuration.server === remote && result.configuration.token === 'server-token',
-                'the address that answered');
+            const saved = tv.events.filter(event => event[0] === 'configuration').pop()[1];
+            check(!('configuration' in result) && saved.server === remote && saved.token === 'server-token',
+                'the address and resource credential that answered persist only through the private host event');
         });
     }).then(() => {
         step = 'notifications';

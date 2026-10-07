@@ -69,10 +69,11 @@ function parse(response) {
 // addresses also get an HTTP fallback when the plex.direct certificate fails.
 export function connections(list) {
     const rank = c => (c.relay ? 2 : c.local ? 0 : 1);
-    const sorted = (list || []).filter(c => /^https?:\/\//.test(String(c.uri || ''))).sort((a, b) => rank(a) - rank(b));
+    const sorted = (Array.isArray(list) ? list : []).filter(c => c && customAddress(c.uri)).sort((a, b) => rank(a) - rank(b));
     const result = [];
     const add = (uri, local) => {
-        const normalized = uri.replace(/\/+$/, '');
+        const normalized = customAddress(uri);
+        if (!normalized) return;
         if (!result.some(c => c.uri === normalized))
             result.push({ uri: normalized, local: local });
     };
@@ -128,6 +129,27 @@ export function createSource(configuration, sourceHost) {
     let stopped = false;
     const denied = new Set();
     let policy = null;
+    let setupLinked = null;
+    let setupUser = null;
+    let setupServers = [];
+    let setupGeneration = 0;
+
+    function setupResult(result, generation) {
+        if (stopped || generation !== setupGeneration) throw new Error('cancelled');
+        setupUser = result.user;
+        setupServers = result.servers || [];
+        if (result.homeUsers) setupLinked = result.user;
+        const publicUser = value => ({
+            id: value.id, name: value.name, homeProtected: value.homeProtected === true,
+            homeManaged: value.homeManaged === true, homeFamilyId: value.homeFamilyId || ''
+        });
+        const answer = {
+            user: publicUser(result.user),
+            servers: setupServers.map(value => ({ id: value.id, name: value.name, connections: value.connections }))
+        };
+        if (result.homeUsers) answer.homeUsers = result.homeUsers.map(publicUser);
+        return answer;
+    }
 
     function requireCapability(id) {
         if (capabilities[id] !== true)
@@ -140,20 +162,28 @@ export function createSource(configuration, sourceHost) {
             headers: headers(device, userToken) }).then(parse);
     }
 
-    // Every address is asked at once, each for at most four seconds, as Plex's
-    // own clients test a resource's connections; the most preferred address
-    // that proves it is this server wins. Candidates arrive in preference order.
+    // Four probes at most share one four-second deadline. Preserve preference
+    // order even when a remote connection answers before a local connection.
     function reach(host, candidates, accessToken, expectedId) {
-        const probe = c => Promise.race([
-            host.http(c.uri + '/', { headers: headers(device, accessToken) }).then(parse).then(
-                result => container(result).machineIdentifier === expectedId ? 'ok' : 'home_server_identity_mismatch',
-                error => code(error)),
-            host.delay(4000).then(() => 'network_error')
-        ]);
-        return Promise.all(candidates.map(probe)).then(results => {
+        let expired = false;
+        let next = 0;
+        const results = [];
+        const deadline = host.delay(4000).then(() => { expired = true; return 'network_error'; });
+        function worker() {
+            if (expired || stopped || next >= candidates.length) return Promise.resolve();
+            const index = next++;
+            return Promise.race([
+                host.http(candidates[index].uri + '/', { headers: headers(device, accessToken) })
+                    .then(parse).then(result => container(result).machineIdentifier === expectedId
+                        ? 'ok' : 'home_server_identity_mismatch', error => code(error)),
+                deadline
+            ]).then(result => { results[index] = result; return worker(); });
+        }
+        return Promise.all(candidates.slice(0, 4).map(() => worker())).then(() => {
             if (stopped) throw new Error('cancelled');
             const index = results.indexOf('ok');
             if (index >= 0) return candidates[index];
+            if (results.some(result => result === 'origin_denied')) throw new Error('origin_denied');
             if (results.some(result => result === 'http_401' || result === 'http_403')) throw new Error('http_401');
             if (results.indexOf('home_server_identity_mismatch') >= 0) throw new Error('home_server_identity_mismatch');
             throw new Error('network_error');
@@ -226,9 +256,15 @@ export function createSource(configuration, sourceHost) {
         linkedAccountToken: configuration.linkedAccountToken || '' });
     let remote = makeRemote();
     function serverResources(resources) {
+        const seen = new Set();
         return (Array.isArray(resources) ? resources : [])
-            .filter(r => String(r.provides || '').split(',').indexOf('server') >= 0
-                && typeof r.accessToken === 'string' && r.accessToken.length > 0)
+            .filter(r => {
+                if (!r || typeof r.clientIdentifier !== 'string' || !r.clientIdentifier || seen.has(r.clientIdentifier)
+                        || String(r.provides || '').split(',').indexOf('server') < 0
+                        || typeof r.accessToken !== 'string' || !r.accessToken) return false;
+                seen.add(r.clientIdentifier);
+                return true;
+            })
             .map(r => ({ id: r.clientIdentifier, name: r.name || '', token: r.accessToken,
                 connections: connections(r.connections), owned: r.owned }));
     }
@@ -433,7 +469,14 @@ export function createSource(configuration, sourceHost) {
                 throw new Error('auth_required');
             throw error;
         }),
-        homeSelect: home.select,
+        homeSelect: (args, host) => {
+            if (!setupLinked) throw new Error('home_relink_required');
+            const generation = ++setupGeneration;
+            setupUser = null;
+            setupServers = [];
+            return home.select({ user: setupLinked, userId: args.userId, pin: args.pin }, host)
+                .then(result => setupResult(result, generation));
+        },
         homeSettings: home.settings,
         homeAutomaticSignIn: home.setAutomatic,
         remoteTargets: (args, host) => remote.remoteTargets(args, host),
@@ -446,14 +489,39 @@ export function createSource(configuration, sourceHost) {
 
         // Sign-in: a code linked at plex.tv/link, then one of the account's
         // servers. These run before the account exists.
-        pinStart: (args, host) => tv(host, 'POST', '/api/v2/pins', { strong: false })
-            .then(pin => ({ id: String(pin.id), code: pin.code })),
-        pinPoll: (args, host) => tv(host, 'GET', '/api/v2/pins/' + segment(String(args.id || ''))).then(pin => {
-            if (!pin.authToken)
-                return { pending: true };
-            return tv(host, 'GET', '/api/v2/user', {}, pin.authToken)
-                .then(user => home.linked(host, user, pin.authToken));
-        }),
+        setupCancel: () => {
+            ++setupGeneration;
+            return {};
+        },
+        setupResume: (args, host) => {
+            const saved = configuration.setupAccount;
+            if (!saved || !saved.homeFamilyId || !saved.linkedAccountToken)
+                return { relink: true };
+            const generation = ++setupGeneration;
+            return tv(host, 'GET', '/api/v2/user', {}, saved.linkedAccountToken)
+                .then(profile => home.linked(host, profile, saved.linkedAccountToken))
+                .then(result => {
+                    if (result.user.homeFamilyId !== saved.homeFamilyId) throw new Error('home_identity_mismatch');
+                    return setupResult(result, generation);
+                });
+        },
+        pinStart: (args, host) => {
+            ++setupGeneration;
+            setupLinked = null;
+            setupUser = null;
+            setupServers = [];
+            return tv(host, 'POST', '/api/v2/pins', { strong: false })
+                .then(pin => ({ id: String(pin.id), code: pin.code }));
+        },
+        pinPoll: (args, host) => {
+            const generation = setupGeneration;
+            return tv(host, 'GET', '/api/v2/pins/' + segment(String(args.id || ''))).then(pin => {
+                if (!pin.authToken) return { pending: true };
+                return tv(host, 'GET', '/api/v2/user', {}, pin.authToken)
+                    .then(user => home.linked(host, user, pin.authToken))
+                    .then(result => setupResult(result, generation));
+            });
+        },
         // Which server answers at a typed address. Plex serves its identity
         // without a token, so this names the server before trusting it.
         identify: (args, host) => {
@@ -466,25 +534,34 @@ export function createSource(configuration, sourceHost) {
         // The authenticated root both verifies the token and checks that an
         // advertised address still belongs to the selected server.
         connect: (args, host) => {
-            const target = args.server || {};
-            const user = args.user || {};
+            const target = setupServers.find(value => value.id === args.serverId);
+            const user = setupUser;
+            if (!target || !user) throw new Error('invalid_config');
+            const previous = configuration.setupAccount;
+            if (configuration.setupContext && configuration.setupContext.purpose === 'reconnect'
+                    && previous && (user.id !== String(previous.userId) || target.id !== previous.serverId))
+                throw new Error('account_mismatch');
+            const generation = setupGeneration;
             // A typed address is tried first and kept with the advertised ones;
             // like them, it must prove it is the chosen server below.
             const typed = customAddress(args.address);
             const candidates = (typed ? [{ uri: typed, local: false }] : [])
                 .concat((target.connections || []).filter(c => c.uri !== typed));
-            return reach(host, candidates, target.token, target.id).catch(() => {
+            return reach(host, candidates, target.token, target.id).then(chosen => {
+                if (stopped || generation !== setupGeneration) throw new Error('cancelled');
+                sourceHost.emit('configuration', {
+                    server: chosen.uri, connections: candidates, token: target.token,
+                    serverId: target.id, serverName: target.name || '', userId: user.id, userName: user.name || '',
+                    owned: target.owned, activeAccountToken: user.activeAccountToken || '',
+                    linkedAccountToken: user.linkedAccountToken || '',
+                    homeFamilyId: user.homeFamilyId || '', homeProtected: user.homeProtected === true,
+                    homeManaged: user.homeManaged === true
+                });
+                return { account: user.id + '@' + target.id, group: target.id,
+                    label: user.name || '', detail: target.name || '' };
+            }).catch(error => {
+                if (['http_401', 'origin_denied', 'cancelled'].includes(code(error))) throw error;
                 throw new Error('server_unreachable');
-            }).then(chosen => {
-                return {
-                    account: user.id + '@' + target.id, group: target.id, label: user.name || '', detail: target.name || '',
-                    configuration: { server: chosen.uri, connections: candidates, token: target.token,
-                        serverId: target.id, serverName: target.name || '', userId: user.id, userName: user.name || '',
-                        owned: target.owned, activeAccountToken: user.activeAccountToken || '',
-                        linkedAccountToken: user.linkedAccountToken || '',
-                        homeFamilyId: user.homeFamilyId || '', homeProtected: user.homeProtected === true,
-                        homeManaged: user.homeManaged === true }
-                };
             });
         },
 
@@ -959,6 +1036,10 @@ export function createSource(configuration, sourceHost) {
         signOut: () => {
             stopped = true;
             active = false;
+            ++setupGeneration;
+            setupLinked = null;
+            setupUser = null;
+            setupServers = [];
             home.stop();
             queueReporter.stop();
             remote.stop();
@@ -967,7 +1048,7 @@ export function createSource(configuration, sourceHost) {
             return {};
         }
     };
-    for (const name of ['pinStart', 'pinPoll', 'homeSelect', 'identify', 'connect']) {
+    for (const name of ['setupCancel', 'setupResume', 'pinStart', 'pinPoll', 'homeSelect', 'identify', 'connect']) {
         const operation = source[name];
         source[name] = (args, host) => {
             if (configuration.server || stopped) throw new Error('action_unavailable');
@@ -976,7 +1057,7 @@ export function createSource(configuration, sourceHost) {
     }
     // Defense in depth: even custom baseline operations cannot use saved
     // credentials while a prepared Home source is private/locked.
-    const utilities = ['describe', 'activate', 'signOut', 'pinStart', 'pinPoll', 'homeSelect',
+    const utilities = ['describe', 'activate', 'signOut', 'setupCancel', 'setupResume', 'pinStart', 'pinPoll', 'homeSelect',
         'identify', 'connect'];
     for (const name of Object.keys(source)) {
         if (utilities.includes(name)) continue;

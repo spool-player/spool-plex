@@ -12,7 +12,7 @@ function fails(action, expected) {
 }
 function fixture() {
     const state = { offline: false, denied: false, wrongUser: false, wrongServer: false,
-        removeServer: false, deferUsers: false, homeStatus: 200, serverStatus: 200, emptyHome: false, profile: {},
+        removeServer: false, deferUsers: false, homeStatus: 200, serverStatus: 200, switchStatus: 200, emptyHome: false, profile: {},
         linkedAs: 'full', hung: '', staleGuest: false, calls: [], events: [], sockets: [], pending: null };
     const ids = { full: 1, member: 2, guest: 3, guest2: 3 };
     const json = value => ({ status: 200, body: JSON.stringify(value) });
@@ -47,6 +47,7 @@ function fixture() {
                     'Home switch uses a form POST');
                 check(url.indexOf('pin=') < 0, 'PIN never enters URLs');
                 const id = path.split('/')[4];
+                if (state.switchStatus !== 200) return Promise.resolve({ status: state.switchStatus, body: '' });
                 if (options.body !== (id === '3' ? 'pin=' : 'pin=1234')) response = { status: 401, body: '' };
                 else response = xml('<user id="' + id + '" authenticationToken="'
                     + { 1: 'full', 2: 'member', 3: state.staleGuest ? 'guest2' : 'guest' }[id] + '"/>');
@@ -88,24 +89,24 @@ function args(reason, extra) { return Object.assign({ reason: reason, lastUsed: 
 function login() {
     const f = fixture();
     const source = createSource({}, f.host);
-    let linked;
     return source.pinPoll({ id: '7' }, f.host).then(result => {
-        linked = result.user;
         check(result.homeUsers.map(user => user.id).join(',') === '1,2,3' && result.servers.length === 0,
             'link presents Home identities before choosing a server');
-        return fails(() => source.homeSelect({ user: linked, userId: '2', pin: 'wrong' }, f.host), 'home_authentication_failed');
-    }).then(() => source.homeSelect({ user: linked, userId: '2', pin: '1234' }, f.host)).then(result => {
-        check(result.user.linkedAccountToken === 'full' && result.user.activeAccountToken === 'member'
-            && result.user.homeManaged && result.user.homeFamilyId === '1', 'separate linked/member identity credentials');
-        check(result.servers[0].token === 'member-pms', 'resources re-fetched under switched identity');
-        return source.connect({ user: result.user, server: result.servers[0] }, f.host);
+        check(!('linkedAccountToken' in result.user) && !('activeAccountToken' in result.user),
+            'linked credentials never enter the QML response');
+        return fails(() => source.homeSelect({ userId: '2', pin: 'wrong' }, f.host), 'invalid_pin');
+    }).then(() => source.homeSelect({ userId: '2', pin: '1234' }, f.host)).then(result => {
+        check(result.user.homeManaged && result.user.homeFamilyId === '1' && !('token' in result.servers[0]),
+            'Home/server chooser receives identities, not authentication secrets');
+        return source.connect({ serverId: result.servers[0].id }, f.host);
     }).then(result => {
-        check(result.account === '2@machine' && result.configuration.userId === '2'
-            && result.configuration.homeFamilyId === '1', 'new identity gets its own account key in the admin Home');
-        check(result.configuration.token === 'member-pms' && result.configuration.linkedAccountToken === 'full'
-            && result.configuration.activeAccountToken === 'member' && !Object.prototype.hasOwnProperty.call(result.configuration, 'pin'),
-            'only the three credential roles, never PIN, persist');
-        const active = createSource(result.configuration, f.host);
+        const saved = f.state.events.filter(row => row.event === 'configuration').pop().payload;
+        check(result.account === '2@machine' && saved.userId === '2'
+            && saved.homeFamilyId === '1', 'new identity gets its own account key in the admin Home');
+        check(!('configuration' in result) && saved.token === 'member-pms' && saved.linkedAccountToken === 'full'
+            && saved.activeAccountToken === 'member' && !Object.prototype.hasOwnProperty.call(saved, 'pin'),
+            'three credential roles persist through the private host event, never QML or PIN');
+        const active = createSource(saved, f.host);
         const count = f.state.calls.filter(call => call.path.indexOf('/switch') >= 0).length;
         return active.activate(args('linked'), f.host).then(proof => {
             check(proof.grant.identityId === '2' && !proof.pick
@@ -215,18 +216,9 @@ function automatic() {
         return fails(() => createSource(config({ homeAutomaticSignIn: true }), f.host).activate(args('startup'), f.host), 'http_401');
     });
 }
-function legacyAndCancellation() {
+function cancellation() {
     const f = fixture();
-    const legacy = Object.assign({}, f.host); delete legacy.capabilities;
-    return fails(() => createSource(config(), legacy), 'activation_host_required').then(() => {
-        check(f.state.calls.length === 0 && f.state.sockets.length === 0, 'legacy protected configuration fails before authentication');
-        const login = createSource({}, legacy);
-        return login.pinPoll({ id: '7' }, legacy).then(result => {
-            check(!result.homeUsers && result.servers[0].token === 'full-pms', 'ordinary linked login works on old hosts without Home');
-            check(!f.state.calls.some(call => call.path.indexOf('/api/home') === 0), 'old host never exposes Home switching');
-            return fails(() => login.homeSelect({}, legacy), 'unsupported_capability');
-        });
-    }).then(() => {
+    return Promise.resolve().then(() => {
         const pms = createSource({ server: origin, token: 'member-pms', serverId: 'machine' }, f.host);
         return pms.activate(args('startup'), f.host).then(() => {
             const begin = f.state.calls.length;
@@ -253,10 +245,11 @@ function optionalHomeEndpoint() {
             f.state.homeStatus = status;
             const source = createSource({}, f.host);
             return source.pinPoll({ id: '7' }, f.host).then(result => {
-                check(!result.homeUsers && !result.user.homeFamilyId && result.servers[0].token === 'full-pms',
+                check(!result.homeUsers && !result.user.homeFamilyId && result.servers[0].id === 'machine',
                     'ordinary linked accounts retain server login when Home endpoint is unavailable');
-                return source.connect({ user: result.user, server: result.servers[0] }, f.host);
-            }).then(account => check(account.account === '1@machine' && account.configuration.activeAccountToken === 'full',
+                return source.connect({ serverId: result.servers[0].id }, f.host);
+            }).then(account => check(account.account === '1@machine'
+                && f.state.events.filter(row => row.event === 'configuration').pop().payload.activeAccountToken === 'full',
                 'optional Home absence still completes an ordinary account'));
         });
     }
@@ -341,10 +334,10 @@ function credentialChain() {
     const f = fixture();
     const login = createSource({}, f.host);
     return login.pinPoll({ id: '7' }, f.host)
-        .then(result => login.homeSelect({ user: result.user, userId: '2', pin: '1234' }, f.host))
-        .then(result => Promise.all(result.servers.map(server => login.connect({ user: result.user, server: server }, f.host))))
-        .then(accounts => {
-            const saved = accounts.map(account => account.configuration);
+        .then(() => login.homeSelect({ userId: '2', pin: '1234' }, f.host))
+        .then(result => Promise.all(result.servers.map(server => login.connect({ serverId: server.id }, f.host))))
+        .then(() => {
+            const saved = f.state.events.filter(row => row.event === 'configuration').map(row => row.payload);
             check(saved[0].token === 'member-pms' && saved[1].token === 'member-other' && saved.every(value =>
                 value.linkedAccountToken === 'full' && value.activeAccountToken === 'member' && value.homeFamilyId === '1'),
             'each server keeps its own resource token beside one member and one Home credential');
@@ -379,6 +372,16 @@ function unprotectedResume() {
                 && !('linkedAccountToken' in written), 'a rejected member credential is renewed by one Home switch');
             stale.signOut();
         });
+    }).then(() => {
+        const expired = fixture();
+        expired.state.staleGuest = true;
+        expired.state.switchStatus = 401;
+        const locked = createSource(saved, expired.host);
+        return fails(() => locked.activate(args('switch'), expired.host), 'http_401').then(() => {
+            check(!locked.describe().artwork && expired.state.events.length === 0
+                && expired.state.calls.filter(call => call.path.indexOf('/switch') >= 0).length === 1,
+                'unprotected Home POST 401 requests reauthentication, never an invalid-PIN loop or owner fallback');
+        });
     });
 }
 function memberLinked() {
@@ -389,5 +392,40 @@ function memberLinked() {
             'a member linking this device joins the administrator Home rather than founding another');
     });
 }
+function setupReuse() {
+    const f = fixture();
+    const first = createSource({}, f.host);
+    let saved;
+    return first.pinPoll({ id: '7' }, f.host)
+        .then(() => first.homeSelect({ userId: '2', pin: '1234' }, f.host))
+        .then(() => first.connect({ serverId: 'machine' }, f.host))
+        .then(() => {
+            saved = f.state.events.filter(row => row.event === 'configuration').pop().payload;
+            const another = createSource({ setupAccount: saved, setupContext: { purpose: 'addProfile' } }, f.host);
+            return another.setupResume({}, f.host).then(result => {
+                check(result.homeUsers.length === 3 && !('linkedAccountToken' in result.user),
+                    'another profile reuses the retained owner link without exposing it');
+                return another.homeSelect({ userId: '3', pin: '' }, f.host);
+            }).then(() => another.connect({ serverId: 'machine' }, f.host)).then(account => {
+                const member = f.state.events.filter(row => row.event === 'configuration').pop().payload;
+                check(account.account === '3@machine' && member.activeAccountToken === 'guest'
+                    && member.token === 'guest-pms' && member.linkedAccountToken === saved.linkedAccountToken
+                    && f.state.calls.filter(call => call.path === '/api/v2/pins/7').length === 1,
+                    'two Home profiles keep separate member/PMS credentials after one owner link');
+                another.signOut();
+                return fails(() => another.setupResume({}, f.host), 'action_unavailable');
+            });
+        }).then(() => {
+            const draft = createSource({ setupAccount: saved }, f.host);
+            return draft.setupResume({}, f.host).then(() => draft.homeSelect({ userId: '3', pin: '' }, f.host))
+                .then(() => {
+                    const count = f.state.events.length;
+                    const pending = draft.connect({ serverId: 'machine' }, f.host);
+                    draft.setupCancel();
+                    return fails(() => pending, 'cancelled').then(() => check(f.state.events.length === count,
+                        'cancelled server selection never commits private credentials'));
+                });
+        });
+}
 export function run() { return optionalHomeEndpoint().then(login).then(gate).then(family).then(automatic)
-    .then(legacyAndCancellation).then(credentialChain).then(unprotectedResume).then(memberLinked); }
+    .then(cancellation).then(credentialChain).then(unprotectedResume).then(memberLinked).then(setupReuse); }

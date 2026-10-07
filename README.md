@@ -24,12 +24,12 @@ into Spool. These adapters require the matching host build providing
 `ProviderLinkScreen`, `ProviderActionPicker`, `ProviderRemoteControls` and
 `ProviderCompatibilityNotice`; only Plex-specific flow and policy remain in this package.
 
-Sign-in, saved-server validation, Home activation and read failover ask every candidate
-address at once with an authenticated server-root request, each bounded to four seconds, as
-Plex's own clients test a resource's connections. The most preferred address that proves the
-expected machine identifier wins: the last address that answered, then local, remote, Plex relay.
-A preferred address that never answers therefore cannot hold activation past the operation
-deadline. Advertised local addresses also have an HTTP fallback, which sends the server token
+Sign-in, saved-server validation, Home activation and read failover probe authenticated
+server roots with at most four requests in flight and one shared four-second deadline.
+The most preferred approved address that proves the expected machine identifier wins:
+the last address that answered, then local, remote, Plex relay. A preferred address that
+never answers cannot hold activation past the deadline. Advertised local addresses also
+have an HTTP fallback, which sends the server token
 without TLS; prefer a working HTTPS/plex.direct connection on untrusted networks. Failed reads
 switch to another saved address that proves the same server and reconnect the notification
 socket; mutations are not blindly retried, and authorization errors do not silently switch servers. Each Plex user of a server is its own Spool account. Failed sign-ins can
@@ -107,12 +107,22 @@ Existing PMS-only accounts retain playback and PMS `/clients` discovery; add
 and link an account normally to enable Home/cloud discovery. PINs are transient
 form bodies, never saved configuration, URLs, logs or grants.
 
+The login worker retains these credentials privately. Home and server chooser results
+contain only identity labels and connection addresses; completing a connection emits its
+configuration directly to the host's private draft credential path, not QML. Adding
+another Home member uses the same module's explicit `setupAccount` context to validate
+the retained link and enumerate Home, without another plex.tv/link round. Resource lists
+are still fetched with the newly selected member's credential. Reconnect starts a fresh
+device link; cancellation prevents a pending connection from committing credentials.
+
 Saved server-only accounts verify their PMS credential and machine identity
 before activation. Missing stored credentials and rejected linked/Home-account
 authentication prompt reconnect rather than publishing a successful activation.
-An incorrect Home PIN is reported as `invalid_pin` and remains retryable, not a reason to
-discard credentials; failed authentication never overwrites the saved tokens. A member whose
-resources no longer list this server fails with `permission_denied`.
+An incorrect PIN for a protected Home member with a submitted PIN is reported as
+`invalid_pin` and remains retryable, not a reason to discard credentials. An
+unprotected switch returning HTTP 401 requests sign-in again, never a PIN loop.
+Failed authentication never overwrites the saved tokens. A member whose resources no
+longer list this server fails with `permission_denied`.
 
 Protected-user switches require authentication. An unprotected member resumes with the
 member token Plex already issued to this device; a new Home switch happens only when that
@@ -121,6 +131,9 @@ protected user's PIN unless **Automatic sign-in** is enabled for this Home on
 this device. Only an authenticated regular (not managed) Home account can
 change that option in provider settings. It does not sync, does not bypass
 explicit switches, and protects this Plex Home—not unrelated signed-in accounts.
+Spool's **Always use this profile / Choose a profile at startup** controls which saved
+watching profile is selected; it does not unlock a protected Plex identity or override
+Plex's provider-owned skip-PIN policy.
 Offline resume is limited to the authorized last-used automatic-sign-in identity;
 offline switching fails rather than treating saved credentials as an unlock.
 
@@ -135,9 +148,10 @@ fail closed when it is unavailable.
 
 Policy follows Plex's [fast user switching documentation](https://support.plex.tv/articles/204232453-fast-user-switching/)
 and its [Home XML client](https://github.com/plexinc/plex-for-kodi/blob/master/lib/_included_packages/plexnet/myplexaccount.py).
-Stateful Qt contract fixtures cover token separation, PIN failure, activation,
-family/server identity checks, automatic/offline restrictions and old-host
-fail-closed behavior; live Plex Home behavior still requires service validation.
+Stateful Qt contract fixtures drive the production provider's token separation, private
+setup results, retained Home reuse, PIN retry, unprotected credential expiry, activation,
+family/server identity checks and automatic/offline restrictions. They simulate protocol
+responses and do not establish live service compatibility.
 
 
 ## Playback and quality
@@ -369,9 +383,11 @@ To try a checkout in Spool without releasing it, configure Spool with
 
 ## Releasing
 
-Current release: **0.1.7**, adding original and server-converted downloads,
-global seek-preview opt-out and filtered provider diagnostics for Spool 0.9.0.
-Downloads retain the chosen edition/part and use independent server sessions.
+Current release: **0.1.8**, using the current format-3 capability contract.
+The unreleased **0.1.9** profile-session branch retains separate Home/member/PMS
+credentials, reuses a household link for additional watching profiles, keeps credentials
+out of the login UI, distinguishes expired sign-in from wrong PIN, and bounds server
+probes while preserving approved-origin and resource identity restrictions.
 
 Bump `version` in `manifest.json` when needed, push `main`, then push the matching `v<version>` tag.
 The workflow verifies pinned SDK hashes, runs the contract in Qt JIT and interpreter modes,
