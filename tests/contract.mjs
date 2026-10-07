@@ -76,7 +76,8 @@ const episode = { ratingKey: '20', type: 'episode', title: 'Pilot', index: 1, pa
 
 function account(down) {
     const pms = server({
-        ['GET ' + local + '/']: { MediaContainer: {} },
+        ['GET ' + local + '/']: { MediaContainer: { machineIdentifier: 'machine' } },
+        ['GET ' + remote + '/']: { MediaContainer: { machineIdentifier: 'machine' } },
         ['GET ' + local + '/library/sections/1/all']: { MediaContainer: { totalSize: 3, Metadata: [film] } },
         ['GET ' + remote + '/library/sections/1/all']: { MediaContainer: { totalSize: 3, Metadata: [film] } },
         ['GET ' + local + '/library/sections/1/genre']: { MediaContainer: { Directory: [{ key: '55', title: 'Drama' }] } },

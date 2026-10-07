@@ -143,54 +143,70 @@ export function createSource(configuration, sourceHost) {
             headers: headers(device, userToken) }).then(parse);
     }
 
-    // A server that stops answering at one address is tried at the others
-    // it was signed in with, and the one that answers is remembered.
+    // Every address is asked at once, each for at most four seconds, as Plex's
+    // own clients test a resource's connections; the most preferred address
+    // that proves it is this server wins. Candidates arrive in preference order.
+    function reach(host, candidates, accessToken, expectedId) {
+        const probe = c => Promise.race([
+            host.http(c.uri + '/', { headers: headers(device, accessToken) }).then(parse).then(
+                result => container(result).machineIdentifier === expectedId ? 'ok' : 'home_server_identity_mismatch',
+                error => code(error)),
+            host.delay(4000).then(() => 'network_error')
+        ]);
+        return Promise.all(candidates.map(probe)).then(results => {
+            if (stopped) throw new Error('cancelled');
+            const index = results.indexOf('ok');
+            if (index >= 0) return candidates[index];
+            if (results.some(result => result === 'http_401' || result === 'http_403')) throw new Error('http_401');
+            if (results.indexOf('home_server_identity_mismatch') >= 0) throw new Error('home_server_identity_mismatch');
+            throw new Error('network_error');
+        });
+    }
+
+    function savedCandidates() {
+        const candidates = [{ uri: server }];
+        for (const c of known) {
+            if (c.uri && !candidates.some(seen => seen.uri === c.uri))
+                candidates.push({ uri: c.uri, local: Boolean(c.local) });
+        }
+        return candidates;
+    }
+
+    function useServer(base) {
+        if (server === base)
+            return;
+        server = base;
+        sourceHost.emit('configuration', { server: base });
+        if (disconnect) {
+            disconnect();
+            disconnect = null;
+            openSocket();
+        }
+    }
+
+    // A server that stops answering at one address is looked for at the others
+    // it was signed in with, and the one that answers is remembered. Only reads
+    // are repeated; a mutation may already have been applied.
     function request(host, method, path, parameters) {
         if (!active || stopped) throw new Error('account_locked');
         openSocket();
         const suffix = query(parameters || {});
-        const candidates = [server].concat(known.map(c => c.uri).filter(uri => uri !== server));
-        function attempt(index) {
-            const base = candidates[index];
-            return host.http(base + path + (suffix ? '?' + suffix : ''),
-                { method: method, headers: headers(device, token) }).then(parse).then(result => {
-                if (server !== base) {
-                    server = base;
-                    sourceHost.emit('configuration', { server: base });
-                    if (disconnect)
-                        disconnect();
-                    disconnect = sourceHost.socket ? connect(sourceHost,
-                        server.replace(/^http/i, 'ws') + '/:/websockets/notifications', headers(device, token)) : null;
-                }
-                return result;
-            }, error => {
-                if (method !== 'GET' || code(error) !== 'network_error' || index + 1 >= candidates.length)
-                    throw error;
-                return attempt(index + 1);
-            });
-        }
-        return attempt(0);
+        const send = base => host.http(base + path + (suffix ? '?' + suffix : ''),
+            { method: method, headers: headers(device, token) }).then(parse);
+        return send(server).catch(error => {
+            if (method !== 'GET' || code(error) !== 'network_error' || known.length === 0)
+                throw error;
+            const others = savedCandidates().filter(c => c.uri !== server);
+            return reach(host, others, token, serverId).then(chosen => {
+                useServer(chosen.uri);
+                return send(chosen.uri);
+            }, () => { throw error; });
+        });
     }
 
     function validateSavedServer(host) {
         if (!server || !serverId || !token) throw new Error('invalid_config');
-        const candidates = [server].concat(known.map(c => c.uri).filter(uri => uri !== server));
-        function attempt(index) {
-            const base = candidates[index];
-            return host.http(base + '/', { headers: headers(device, token) }).then(parse).then(result => {
-                if (container(result).machineIdentifier !== serverId)
-                    throw new Error('home_server_identity_mismatch');
-                if (stopped) throw new Error('cancelled');
-                if (server !== base) {
-                    server = base;
-                    sourceHost.emit('configuration', { server: base });
-                }
-            }, error => {
-                if (code(error) !== 'network_error' || index + 1 >= candidates.length) throw error;
-                return attempt(index + 1);
-            });
-        }
-        return attempt(0);
+        return reach(host, savedCandidates(), token, serverId).then(chosen => useServer(chosen.uri));
     }
 
     // Plex's raw-file route is a download endpoint. Without this switch some
@@ -231,32 +247,21 @@ export function createSource(configuration, sourceHost) {
             // Resource refresh does not silently grant newly advertised origins,
             // and keeps the ones already approved even when plex.tv does not
             // list them, such as a typed custom access URL. The address that
-            // last answered goes first.
-            const approved = [server].concat(known.map(c => c.uri));
-            const candidates = [];
-            for (const c of [{ uri: server }].concat(known, target.connections)) {
-                if (c.uri && approved.includes(c.uri) && !candidates.some(seen => seen.uri === c.uri))
+            // last answered goes first, then plex.tv's local, remote, relay order.
+            const approved = savedCandidates();
+            const candidates = approved.slice(0, 1);
+            for (const c of target.connections.concat(approved)) {
+                if (approved.some(seen => seen.uri === c.uri) && !candidates.some(seen => seen.uri === c.uri))
                     candidates.push({ uri: c.uri, local: Boolean(c.local) });
             }
-            function attempt(index) {
-                if (index >= candidates.length) throw new Error('home_server_unavailable');
-                const candidate = candidates[index];
-                return host.http(candidate.uri + '/', { headers: headers(device, target.token) }).then(parse)
-                    .then(result => {
-                        if (container(result).machineIdentifier !== serverId) throw new Error('home_server_identity_mismatch');
-                        if (stopped) throw new Error('cancelled');
-                        server = candidate.uri;
-                        token = target.token;
-                        known = candidates;
-                        activeAccountToken = activeToken;
-                        sourceHost.emit('configuration', { server: server, connections: known, token: token,
-                            activeAccountToken: activeToken, owned: target.owned });
-                    }, error => {
-                        if (code(error) !== 'network_error' || index + 1 >= candidates.length) throw error;
-                        return attempt(index + 1);
-                    });
-            }
-            return Promise.resolve().then(() => attempt(0));
+            return reach(host, candidates, target.token, serverId).then(chosen => {
+                server = chosen.uri;
+                token = target.token;
+                known = candidates;
+                activeAccountToken = activeToken;
+                sourceHost.emit('configuration', { server: server, connections: known, token: token,
+                    activeAccountToken: activeToken, owned: target.owned });
+            });
         } });
 
     function list(host, path, args, parameters) {
@@ -472,18 +477,9 @@ export function createSource(configuration, sourceHost) {
             const typed = customAddress(args.address);
             const candidates = (typed ? [{ uri: typed, local: false }] : [])
                 .concat((target.connections || []).filter(c => c.uri !== typed));
-            const reachable = c => Promise.race([
-                host.http(c.uri + '/', { headers: headers(device, target.token) }).then(parse)
-                    .then(result => container(result).machineIdentifier === target.id, () => false),
-                host.delay(4000).then(() => false)
-            ]);
-            // A typed address is asked alone first: the viewer chose it, and the
-            // advertised ones may be addresses that cannot work from here.
-            const first = typed ? reachable(candidates[0]).then(ok => ok ? [true] : null) : Promise.resolve(null);
-            return first.then(answer => answer || Promise.all(candidates.map(reachable))).then(answers => {
-                const chosen = candidates[answers.indexOf(true)];
-                if (!chosen)
-                    throw new Error('server_unreachable');
+            return reach(host, candidates, target.token, target.id).catch(() => {
+                throw new Error('server_unreachable');
+            }).then(chosen => {
                 return {
                     account: user.id + '@' + target.id, group: target.id, label: user.name || '', detail: target.name || '',
                     configuration: { server: chosen.uri, connections: candidates, token: target.token,

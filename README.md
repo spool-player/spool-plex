@@ -24,12 +24,15 @@ into Spool. These adapters require the matching host build providing
 `ProviderLinkScreen`, `ProviderActionPicker`, `ProviderRemoteControls` and
 `ProviderCompatibilityNotice`; only Plex-specific flow and policy remain in this package.
 
-Sign-in checks every advertised address with an authenticated server-root request and verifies
-its machine identifier. It selects the first reachable address in preference order: local, remote,
-then Plex relay. Advertised local addresses also have an HTTP fallback, which sends the server token
+Sign-in, saved-server validation, Home activation and read failover ask every candidate
+address at once with an authenticated server-root request, each bounded to four seconds, as
+Plex's own clients test a resource's connections. The most preferred address that proves the
+expected machine identifier wins: the last address that answered, then local, remote, Plex relay.
+A preferred address that never answers therefore cannot hold activation past the operation
+deadline. Advertised local addresses also have an HTTP fallback, which sends the server token
 without TLS; prefer a working HTTPS/plex.direct connection on untrusted networks. Failed reads
-switch to another saved address and reconnect the notification socket; mutations are not blindly
-retried, and authorization errors do not silently switch servers. Each Plex user of a server is its own Spool account. Failed sign-ins can
+switch to another saved address that proves the same server and reconnect the notification
+socket; mutations are not blindly retried, and authorization errors do not silently switch servers. Each Plex user of a server is its own Spool account. Failed sign-ins can
 be retried, expired link codes are renewed, and server lists scroll for accounts with many servers.
 
 Plex decimal-string frame rates and ratings are normalized to finite numbers
@@ -86,7 +89,8 @@ logs describe selection indexes and accepted protocol only.
 
 ### Plex Home and device sign-in
 
-With `spool.account-activation` version 1, linking first lists Plex Home users.
+With `spool.account-activation` version 1, linking first lists Plex Home users. The Home's
+activation family is its administrator's user ID, whichever member linked the device.
 Selecting a member verifies their PIN where required, fetches that member's
 Plex.tv identity/resources anew, and offers only their servers. A different
 member is a separate Spool account, never a relabeled cached account.
@@ -106,10 +110,13 @@ form bodies, never saved configuration, URLs, logs or grants.
 Saved server-only accounts verify their PMS credential and machine identity
 before activation. Missing stored credentials and rejected linked/Home-account
 authentication prompt reconnect rather than publishing a successful activation.
-An incorrect Home PIN remains a retryable PIN error, not a reason to discard
-credentials; failed authentication never overwrites the saved tokens.
+An incorrect Home PIN is reported as `invalid_pin` and remains retryable, not a reason to
+discard credentials; failed authentication never overwrites the saved tokens. A member whose
+resources no longer list this server fails with `permission_denied`.
 
-Protected-user switches require authentication. Startup asks for the last-used
+Protected-user switches require authentication. An unprotected member resumes with the
+member token Plex already issued to this device; a new Home switch happens only when that
+token is rejected, and never writes the linked credential. Startup asks for the last-used
 protected user's PIN unless **Automatic sign-in** is enabled for this Home on
 this device. Only an authenticated regular (not managed) Home account can
 change that option in provider settings. It does not sync, does not bypass

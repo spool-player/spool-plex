@@ -5,10 +5,11 @@ import { parseXml } from './xml.mjs';
 
 const truth = value => value === true || value === 1 || value === '1';
 const text = value => value === undefined || value === null ? '' : String(value);
+const code = error => String(error && error.message || error);
 function identity(user) {
     if (!user || !text(user.id)) throw new Error('home_identity_mismatch');
     return { id: text(user.id), name: text(user.title || user.username),
-        homeProtected: truth(user.protected), homeManaged: truth(user.restricted) };
+        homeProtected: truth(user.protected), homeManaged: truth(user.restricted), homeAdmin: truth(user.admin) };
 }
 
 export function createHome(options) {
@@ -75,8 +76,9 @@ export function createHome(options) {
     }
     function finish(host, result) {
         current();
+        // plex.tv lists only the servers shared with this member.
         const target = result.servers.find(server => server.id === configuration.serverId);
-        if (!target) throw new Error('home_server_unavailable');
+        if (!target) throw new Error('permission_denied');
         return options.refreshServer(host, target, result.user.activeAccountToken).then(() => {
             current();
             managed = result.user.homeManaged === true;
@@ -104,7 +106,9 @@ export function createHome(options) {
                 }
                 const linked = members.find(member => member.id === user.id);
                 if (!linked) throw new Error('home_identity_mismatch');
-                Object.assign(user, linked, { homeFamilyId: user.id });
+                // The Home is named by its administrator, whichever member linked.
+                const admin = members.find(member => member.homeAdmin);
+                Object.assign(user, linked, { homeFamilyId: admin ? admin.id : user.id });
                 return { user: user, homeUsers: members, servers: [] };
             }, error => {
                 // Home is optional for an ordinary linked account, but an
@@ -147,7 +151,7 @@ export function createHome(options) {
                 return resources(host, savedUser, activeToken).then(result => finish(host, result)).catch(error => {
                     // Only a previously authorized last-used identity may resume
                     // offline. Invalid credentials/identity/permission never do.
-                    if (!autoStartup || String(error && error.message || error) !== 'network_error') throw error;
+                    if (!autoStartup || code(error) !== 'network_error') throw error;
                     if (!activeToken || !configuration.token || !configuration.server) throw error;
                     authenticated = true;
                     return { grant: grant(activeToken) };
@@ -158,8 +162,16 @@ export function createHome(options) {
                 if (!member) throw new Error('home_identity_mismatch');
                 if (member.homeProtected && (!args.answers || typeof args.answers.pin !== 'string'))
                     return { pick: { kind: 'homePin', title: member.name || configuration.userName || 'Plex Home' } };
-                return switchUser(host, configuration.linkedAccountToken, member,
-                    args.answers && args.answers.pin || '').then(result => finish(host, result));
+                // An unprotected member keeps the token Plex already issued to
+                // this device; switching again is only needed once it is rejected.
+                const switched = () => switchUser(host, configuration.linkedAccountToken, member,
+                    args.answers && args.answers.pin || '').catch(error => {
+                    throw new Error(code(error) === 'home_authentication_failed' ? 'invalid_pin' : code(error));
+                });
+                const resumed = member.homeProtected || !configuration.activeAccountToken ? switched()
+                    : resources(host, member, configuration.activeAccountToken)
+                        .catch(error => code(error) === 'http_401' ? switched() : Promise.reject(error));
+                return resumed.then(result => finish(host, result));
             });
         },
         settings: () => {
