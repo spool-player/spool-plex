@@ -373,10 +373,14 @@ python3 tools/check-sdk.py
 cmake -S sdk -B build/sdk -G Ninja && cmake --build build/sdk
 timeout 20s build/sdk/provider-contract-runner tests/contract.mjs
 QV4_FORCE_INTERPRETER=1 timeout 20s build/sdk/provider-contract-runner tests/contract.mjs
-python3 sdk/spool-provider.py build .
 VERSION=$(python3 -c 'import json; print(json.load(open("manifest.json"))["version"])')
-python3 sdk/spool-provider.py validate "dist/spool.plex-$VERSION.tar.zst"
+python3 sdk/spool-provider.py build . --output "dist/spool.plex-$VERSION.szo"
+python3 sdk/spool-provider.py validate "dist/spool.plex-$VERSION.szo"
 ```
+
+Future packages use `.szo` (Spool Zstandard Object), with the same format-3 zstd USTAR
+bytes. The pinned SDK is unchanged; pass `--output` explicitly rather than using
+its historical default filename. Existing published package URLs remain unchanged.
 
 To try a checkout in Spool without releasing it, configure Spool with
 `-DSPOOL_PROVIDER_OVERRIDES=spool.plex=/path/to/spool-plex`.
@@ -406,8 +410,8 @@ the store discovers the release on its normal schedule. An equivalent local feed
 
 ```sh
 VERSION=$(python3 -c 'import json; print(json.load(open("manifest.json"))["version"])')
-python3 sdk/spool-provider.py feed "dist/spool.plex-$VERSION.tar.zst" \
-  --url "https://github.com/spool-player/spool-plex/releases/download/v$VERSION/spool.plex-$VERSION.tar.zst"
+python3 sdk/spool-provider.py feed "dist/spool.plex-$VERSION.szo" \
+  --url "https://github.com/spool-player/spool-plex/releases/download/v$VERSION/spool.plex-$VERSION.szo"
 ```
 
 MPL-2.0; see LICENSE and NOTICE.
