@@ -281,6 +281,8 @@ are handed to the player; playback headers authenticate sidecar downloads.
 Searches are bounded Plex hub results, not a paginated complete index;
 cross-library browsing pages through libraries in server order, sorting within each library.
 Playlist additions and deletion use the signed-in user's permissions; deletion requires confirmation.
+Destination pagination terminates on empty backend pages even with a stale positive total;
+nonempty pages advance by the raw row count before inaccessible destinations are filtered.
 Playlist rows retain Plex's `playlistItemID` as an opaque `entryId`, preserving the
 identity of each occurrence when the same media appears more than once.
 

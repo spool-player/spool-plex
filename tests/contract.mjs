@@ -108,6 +108,11 @@ function account(down) {
                     { streamType: 2, index: 1, codec: 'aac' }] }] }] }] } },
         ['GET ' + local + '/:/timeline']: {},
         ['GET ' + local + '/video/:/transcode/universal/stop']: {},
+        ['GET ' + local + '/playlists']: call => respond({ MediaContainer:
+            /[?&]X-Plex-Container-Start=2(?:&|$)/.test(call.url)
+                ? { totalSize: 4, Metadata: [{ ratingKey: 'locked', title: 'Locked', canEdit: false }] }
+                : { totalSize: 3, Metadata: /[?&]X-Plex-Container-Start=1(?:&|$)/.test(call.url) ? []
+                    : [{ ratingKey: 'weekend', title: 'Weekend', canEdit: true }] } }),
         ['POST ' + local + '/playlists']: {},
         ['DELETE ' + local + '/library/metadata/10']: {}
     }, down);
@@ -358,6 +363,18 @@ export function run() {
     }).then(result => {
         check(result.message === 'Added to Weekend' && decodeURIComponent(pms.calls[pms.calls.length - 1].url)
             .indexOf('uri=server://machine/com.plexapp.plugins.library/library/metadata/10') > 0, 'a new playlist');
+        return source.targets({ kind: 'playlist', itemId: '10', playlistType: 'video' }, pms.host);
+    }).then(page => {
+        check(page.items.length === 1 && page.items[0].id === 'weekend' && !page.exhausted && page.cursor === '1',
+            'authorized destination pages advance by their raw row count');
+        return source.targets({ kind: 'playlist', itemId: '10', playlistType: 'video', cursor: page.cursor }, pms.host);
+    }).then(page => {
+        check(page.items.length === 0 && page.exhausted && page.cursor === null,
+            'empty destination pages terminate even when the reported total is stale');
+        return source.targets({ kind: 'playlist', itemId: '10', playlistType: 'video', cursor: '2' }, pms.host);
+    }).then(page => {
+        check(page.items.length === 0 && !page.exhausted && page.cursor === '3',
+            'permission-filtered nonempty destination pages keep advancing');
         return source.runItemAction({ action: 'delete', itemId: '10' }, pms.host);
     }).then(result => {
         check(result.pick && result.pick.kind === 'confirm' && !pms.calls.some(c => c.method === 'DELETE'),

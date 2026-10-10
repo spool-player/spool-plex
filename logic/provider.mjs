@@ -1023,8 +1023,8 @@ export function createSource(configuration, sourceHost) {
                     'X-Plex-Container-Start': first, 'X-Plex-Container-Size': limit }).then(result => {
                     const box = container(result);
                     const rows = box.Metadata || box.Directory || [];
-                    const exhausted = Number.isSafeInteger(box.totalSize) ? first + rows.length >= box.totalSize
-                        : rows.length < limit;
+                    const exhausted = rows.length === 0 || (Number.isSafeInteger(box.totalSize)
+                        ? first + rows.length >= box.totalSize : rows.length < limit);
                     return { items: rows.filter(row => writable(row) && !denied.has('edit:' + row.ratingKey)
                         && (!collections || !row.subtype || row.subtype === raw.type))
                         .map(row => ({ id: String(row.ratingKey), title: row.title || '' })),
