@@ -942,8 +942,21 @@ export function createSource(configuration, sourceHost) {
             rating: args.value ? 10 : -1 }).then(() => ({})),
         played: (args, host) => request(host, 'GET', args.value ? '/:/scrobble' : '/:/unscrobble',
             { key: args.itemId, identifier: library }).then(() => ({})),
-        progress: (args, host) => request(host, 'GET', '/:/progress', { key: args.itemId, identifier: library,
-            time: milliseconds(args.positionTicks), state: 'stopped' }).then(() => ({})),
+        // Plex ignores a stopped timeline at zero, so a cleared position stayed
+        // in Continue Watching on the server, and removeFromContinueWatching
+        // only hides the hub entry. Scrobbling and unscrobbling both reset the
+        // position; use the one that leaves the item's watched state as it is.
+        progress: (args, host) => {
+            const time = milliseconds(args.positionTicks);
+            if (time > 0)
+                return request(host, 'GET', '/:/progress', { key: args.itemId, identifier: library, time: time,
+                    state: 'stopped' }).then(() => ({}));
+            return request(host, 'GET', metadata(args.itemId)).then(result => {
+                const raw = (container(result).Metadata || [])[0] || {};
+                return request(host, 'GET', Number(raw.viewCount) > 0 ? '/:/scrobble' : '/:/unscrobble',
+                    { key: args.itemId, identifier: library });
+            }).then(() => ({}));
+        },
 
         // Item menu actions from manifest.json; `pick` shows ui/Picker.qml.
         runItemAction: (args, host) => {

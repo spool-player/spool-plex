@@ -116,7 +116,31 @@ export function run() {
                     'the remux session is released even when its final timeline fails');
             });
         });
-    }).then(authenticate).then(browse).then(probe).then(probeSourceFailures).then(baselineRepairs);
+    }).then(authenticate).then(browse).then(probe).then(probeSourceFailures).then(baselineRepairs)
+        .then(clearedProgress);
+}
+
+// Plex ignores a stopped timeline at zero, so clearing a position must reset
+// it another way without changing whether the item counts as watched.
+function clearedProgress() {
+    const run = (viewCount, positionTicks) => {
+        const paths = [];
+        const host = { device: { id: 'device' }, http: url => {
+            const path = new URL(url).pathname;
+            paths.push(path);
+            return response(path === '/library/metadata/1' ? { Metadata: [Object.assign({}, movie,
+                { viewCount: viewCount, viewOffset: 600000 })] } : {});
+        } };
+        const source = createSource({ server: origin, token: 'secret', serverId: 'machine' }, host);
+        return source.progress({ itemId: '1', positionTicks: positionTicks }, host).then(() => paths);
+    };
+    return run(0, '0').then(paths => {
+        check(paths.join() === '/library/metadata/1,/:/unscrobble', 'clearing an unwatched item unscrobbles it');
+        return run(2, '0');
+    }).then(paths => {
+        check(paths.join() === '/library/metadata/1,/:/scrobble', 'clearing a watched item keeps it watched');
+        return run(0, '6000000000');
+    }).then(paths => check(paths.join() === '/:/progress', 'a real position is still a stopped progress write'));
 }
 
 function authenticate() {
