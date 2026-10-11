@@ -243,6 +243,7 @@ export function createSource(configuration, sourceHost) {
             : key + (key.indexOf('?') < 0 ? '?' : '&') + 'download=1';
         return server + path;
     }
+    const metadata = id => '/library/metadata/' + segment(id);
     const downloads = createDownloads({ request: request, policy: accountPolicy, metadata: id => metadata(id),
         partUrl: partUrl, query: query, server: () => server, headers: () => headers(device, token),
         deviceId: String(device.id || 'spool'), local: () => known.some(c => c.uri === server && c.local) });
@@ -309,7 +310,6 @@ export function createSource(configuration, sourceHost) {
         return request(host, 'GET', path, parameters).then(result => page(result, 0, Number.MAX_SAFE_INTEGER));
     }
 
-    const metadata = id => '/library/metadata/' + segment(id);
     const uri = id => 'server://' + serverId + '/' + library + '/library/metadata/' + id;
 
     function accountPolicy(host) {
@@ -710,7 +710,19 @@ export function createSource(configuration, sourceHost) {
             const key = section(args.parentId);
             return list(host, key ? '/library/sections/' + key + '/recentlyAdded' : '/library/recentlyAdded', args);
         },
-        similar: (args, host) => list(host, metadata(args.itemId) + '/similar', args),
+        // Plex keeps similar titles on movies and shows only and answers 404
+        // for an episode or season, which borrows its show's instead.
+        similar: (args, host) => list(host, metadata(args.itemId) + '/similar', args).catch(error => {
+            if (code(error) !== 'http_404')
+                throw error;
+            return request(host, 'GET', metadata(args.itemId)).then(result => {
+                const raw = (container(result).Metadata || [])[0] || {};
+                const show = raw.type === 'episode' ? raw.grandparentRatingKey
+                    : raw.type === 'season' ? raw.parentRatingKey : '';
+                return show ? list(host, metadata(String(show)) + '/similar', args)
+                    : { items: [], cursor: null, exhausted: true };
+            });
+        }),
         personItems: (args, host) => {
             const match = /^(\d+)\/(actor|director|writer)\/(\d+)$/.exec(String(args.personId || ''));
             if (!match)

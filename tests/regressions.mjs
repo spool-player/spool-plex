@@ -117,7 +117,27 @@ export function run() {
             });
         });
     }).then(authenticate).then(browse).then(probe).then(probeSourceFailures).then(baselineRepairs)
-        .then(clearedProgress);
+        .then(clearedProgress).then(episodeSimilar);
+}
+
+function episodeSimilar() {
+    const paths = [];
+    const host = { device: { id: 'device' }, http: url => {
+        const path = new URL(url).pathname;
+        paths.push(path);
+        if (path === '/library/metadata/7/similar')
+            return response({}, 404);
+        if (path === '/library/metadata/7')
+            return response({ Metadata: [{ ratingKey: '7', type: 'episode', grandparentRatingKey: 5 }] });
+        if (path === '/library/metadata/5/similar')
+            return response({ Metadata: [{ ratingKey: '9', type: 'show', title: 'Another show' }] });
+        throw new Error('unexpected request');
+    } };
+    const source = createSource({ server: origin, token: 'secret', serverId: 'machine' }, host);
+    return source.similar({ itemId: '7' }, host).then(result => {
+        check(result.items.length === 1 && result.items[0].id === '9' && paths.slice(-1)[0] === '/library/metadata/5/similar',
+            'an episode without its own similar titles borrows its show\'s');
+    });
 }
 
 // Plex ignores a stopped timeline at zero, so clearing a position must reset
