@@ -389,11 +389,9 @@ To try a checkout in Spool without releasing it, configure Spool with
 
 ## Releasing
 
-Current release: **0.1.8**, using the current format-3 capability contract.
-The unreleased **0.1.9** profile-session branch retains separate Home/member/PMS
-credentials, reuses a household link for additional watching profiles, keeps credentials
-out of the login UI, distinguishes expired sign-in from wrong PIN, and bounds server
-probes while preserving approved-origin and resource identity restrictions.
+Release **0.1.10** uses the source-only socket host contract, terminates empty
+destination pages, clears resume positions on the server, and resolves similar
+titles for episodes and seasons through their show.
 
 Bump `version` in `manifest.json` when needed, push `main`, then push the matching `v<version>` tag.
 The workflow verifies pinned SDK hashes, runs the contract in Qt JIT and interpreter modes,
