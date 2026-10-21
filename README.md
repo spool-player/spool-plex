@@ -389,9 +389,9 @@ To try a checkout in Spool without releasing it, configure Spool with
 
 ## Releasing
 
-Release **0.1.11** makes library sections seekable: Spool can ask for any row with
-`offset` and load only what is on screen, and `browseIndex` returns Plex's own
-first-character counts so the letter rail is exact.
+Release **0.1.12** lists a saved account's servers without a new link code, so
+another server is added the way a Plex app offers it, and says whose server
+each one is. It keeps 0.1.11's seekable sections and first-letter index.
 
 Bump `version` in `manifest.json` when needed, push `main`, then push the matching `v<version>` tag.
 The workflow verifies pinned SDK hashes, runs the contract in Qt JIT and interpreter modes,

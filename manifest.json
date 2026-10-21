@@ -2,7 +2,7 @@
   "format": 3,
   "id": "spool.plex",
   "name": "Plex",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "publisher": "Spool",
   "summary": "Your Plex Media Server",
   "homepage": "https://github.com/spool-player/spool-plex",
