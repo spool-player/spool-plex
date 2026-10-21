@@ -389,9 +389,9 @@ To try a checkout in Spool without releasing it, configure Spool with
 
 ## Releasing
 
-Release **0.1.10** uses the source-only socket host contract, terminates empty
-destination pages, clears resume positions on the server, and resolves similar
-titles for episodes and seasons through their show.
+Release **0.1.11** makes library sections seekable: Spool can ask for any row with
+`offset` and load only what is on screen, and `browseIndex` returns Plex's own
+first-character counts so the letter rail is exact.
 
 Bump `version` in `manifest.json` when needed, push `main`, then push the matching `v<version>` tag.
 The workflow verifies pinned SDK hashes, runs the contract in Qt JIT and interpreter modes,
