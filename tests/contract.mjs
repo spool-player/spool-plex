@@ -81,6 +81,8 @@ function account(down) {
         ['GET ' + local + '/library/sections/1/all']: { MediaContainer: { totalSize: 3, Metadata: [film] } },
         ['GET ' + remote + '/library/sections/1/all']: { MediaContainer: { totalSize: 3, Metadata: [film] } },
         ['GET ' + local + '/library/sections/1/genre']: { MediaContainer: { Directory: [{ key: '55', title: 'Drama' }] } },
+        ['GET ' + local + '/library/sections/1/firstCharacter']: { MediaContainer: { Directory: [
+            { key: '#', title: '#', size: 1 }, { key: 'F', title: 'F', size: 2 }, { key: 'Q', title: 'Q', size: 0 }] } },
         ['GET ' + local + '/library/sections']: { MediaContainer: { Directory: [{ key: '1', title: 'Films', type: 'movie' },
             { key: '2', title: 'Shows', type: 'show' }] } },
         ['GET ' + local + '/library/metadata/10']: { MediaContainer: { Metadata: [film] } },
@@ -291,6 +293,19 @@ export function run() {
             && url.indexOf('sort=addedAt%3Adesc') > 0 && url.indexOf('type=1') > 0, 'filters and sort');
         check(url.indexOf('resolution=4k') > 0 && url.indexOf('hdr=1') > 0, '4K and HDR filters reach Plex');
         check(url.indexOf('X-Plex-Container-Start=0') > 0 && url.indexOf('X-Plex-Container-Size=1') > 0, 'page window');
+        check(page.seekable === true, 'a section listing with a total is seekable');
+        return source.browse({ parentId: 'section:1', limit: 1, offset: 2 }, pms.host);
+    }).then(page => {
+        const url = pms.calls[pms.calls.length - 1].url;
+        check(url.indexOf('X-Plex-Container-Start=2') > 0 && page.exhausted, 'offset starts the page at that row');
+        return fails(() => source.browse({ parentId: 'section:1', limit: 1, offset: -1 }, pms.host), 'invalid_cursor');
+    }).then(() => source.browseIndex({ parentId: 'section:1', collectionType: 'movies',
+        filters: { filters: ['IsUnplayed'] } }, pms.host)).then(index => {
+        const url = pms.calls[pms.calls.length - 1].url;
+        check(index.entries.length === 2 && index.entries[0].label === '#' && index.entries[1].count === 2,
+            'first-character counts, empty letters dropped');
+        check(url.indexOf('unwatched=1') > 0 && url.indexOf('type=1') > 0 && url.indexOf('sort=') < 0,
+            'the index honours filters and ignores sort');
         return source.browse({ parentId: 'section:1', limit: 5, filters: { genres: ['Western'] } }, pms.host);
     }).then(() => {
         check(pms.calls[pms.calls.length - 1].url.indexOf('genre=-1') > 0, 'a genre the library lacks matches nothing');

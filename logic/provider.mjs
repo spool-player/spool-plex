@@ -33,6 +33,12 @@ function segment(value) {
 }
 
 function start(args) {
+    // A seekable listing may be asked for any row instead of continued.
+    if (args.offset !== undefined && args.offset !== null && !args.cursor) {
+        if (!Number.isSafeInteger(args.offset) || args.offset < 0)
+            throw new Error('invalid_cursor');
+        return args.offset;
+    }
     const cursor = args.cursor ? String(args.cursor) : '0';
     if (!/^\d+$/.test(cursor))
         throw new Error('invalid_cursor');
@@ -573,9 +579,11 @@ export function createSource(configuration, sourceHost) {
             const key = section(args.parentId);
             if (args.parentId && !key)
                 return list(host, metadata(args.parentId) + '/children', args);
+            // One section is positional: Spool may fetch only the rows on screen.
             if (key)
                 return sectionParameters(host, key, args)
-                    .then(parameters => list(host, '/library/sections/' + key + '/all', args, parameters));
+                    .then(parameters => list(host, '/library/sections/' + key + '/all', args, parameters))
+                    .then(p => Object.assign(p, { seekable: p.total !== null }));
             // Continue across section boundaries instead of dropping every item
             // after the first page of each library.
             const match = /^(\d+):(\d+)$/.exec(String(args.cursor || '0:0'));
@@ -603,6 +611,20 @@ export function createSource(configuration, sourceHost) {
                 }
                 return collect(Number(match[1]), Number(match[2]));
             });
+        },
+        // Plex counts a section's titles by first character itself, honouring
+        // the same filters, which makes the letter rail exact in one request.
+        browseIndex: (args, host) => {
+            const key = section(args.parentId);
+            if (!key)
+                return { entries: [] };
+            return sectionParameters(host, key, args).then(parameters => {
+                delete parameters.sort;
+                return request(host, 'GET', '/library/sections/' + key + '/firstCharacter', parameters);
+            }).then(result => ({
+                entries: (container(result).Directory || []).map(d => ({ label: String(d.title || d.key || ''),
+                    count: Number(d.size) || 0 })).filter(entry => entry.label && entry.count > 0)
+            }));
         },
         items: (args, host) => (args.ids || []).length === 0 ? { items: [], cursor: null, exhausted: true }
             : all(host, '/library/metadata/' + args.ids.map(id => segment(String(id))).join(',')),

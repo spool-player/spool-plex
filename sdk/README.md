@@ -41,8 +41,10 @@ assets/            icon and anything else the screens show
 - `origins` are reachable by every account; `*` allows any HTTP(S) origin. Anything else an account
   reaches is what its login screen allowed with `provider.allowOrigin(url)`.
 - `actions` appear in the item menu for the listed types and run through `runItemAction`.
-- Packages are `.tar.zst` (ustar, zstd), at most 16 MiB, 512 files, 32 MiB expanded. Paths are
-  relative, without hidden parts, of the listed types; links and native binaries are refused.
+- Packages use `.szo` (Spool Zstandard Object): unchanged ustar compressed with zstd,
+  at most 16 MiB, 512 files, 32 MiB expanded. Paths are relative, without hidden parts,
+  of the listed types; links and native binaries are refused. Published archive URLs
+  remain opaque transport names; existing `.tar.zst` releases stay valid.
 - `format: 3` is the only package schema gate. The manifest has no `api` or
   `extensions` fields; packages containing either are rejected.
 - `capabilities` is required: an array of at most 24 known names, with no
@@ -50,9 +52,9 @@ assets/            icon and anything else the screens show
   Account availability is reported separately; see [Capabilities](#capabilities).
 
 ```
-python3 sdk/spool-provider.py build path/to/provider           # dist/<id>-<version>.tar.zst
-python3 sdk/spool-provider.py validate dist/<id>-<version>.tar.zst
-python3 sdk/spool-provider.py feed dist/<id>-<version>.tar.zst --url https://…/<id>-<version>.tar.zst
+python3 sdk/spool-provider.py build path/to/provider           # dist/<id>-<version>.szo
+python3 sdk/spool-provider.py validate dist/<id>-<version>.szo
+python3 sdk/spool-provider.py feed dist/<id>-<version>.szo --url https://…/<id>-<version>.szo
 ```
 
 Building is reproducible. It needs Python 3.14, or the `zstd` command on older Pythons.
@@ -322,6 +324,14 @@ short or empty nonterminal pages are valid when their cursor advances. Missing,
 empty or repeated nonterminal cursors fail with `invalid_pagination`.
 Collectors stop after 256 pages; collect-all also has a 10,000-row bound.
 Exceeding either bound without completion reports `response_limit`.
+
+A `browse` listing that can start at any row says so with `seekable: true` on
+its pages and an exact `total`. Spool then fetches only the rows on screen,
+asking with `offset` (a row number) in place of `cursor`, so a library of tens
+of thousands of titles never has to be walked from the top. Optional
+`browseIndex` answers how a `SortName` listing divides by first character; with
+it the letter rail is exact, without it Spool estimates and corrects itself as
+rows arrive.
 
 `Item.entryId` identifies an occurrence within its container. It is not a media
 ID and is never account-prefixed. Duplicate media IDs retain separate entry IDs
