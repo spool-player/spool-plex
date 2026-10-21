@@ -20,6 +20,23 @@ FocusScope {
     property int generation: 0
     readonly property string trademark: "Plex and the Plex Play logo are trademarks of Plex and used under a license."
     readonly property var setupContext: provider && provider.arguments ? provider.arguments.setupContext || ({}) : ({})
+    // Accounts already in Spool from Plex, as user@server.
+    readonly property var existing: setupContext.existing || []
+    readonly property bool addingServer: setupContext.purpose === "addServer"
+    // The account's servers came from a sign-in Spool already had, so a
+    // different Plex account is one choice away rather than the only way in.
+    property bool resumedSignIn: false
+
+    function added(server) {
+        const key = String(user.id || "") + "@" + server.id
+        return existing.some(entry => entry.account === key)
+    }
+
+    function serverDetail(server) {
+        if (server.owned)
+            return "Your server"
+        return server.owner ? "Shared by " + server.owner : "Shared with you"
+    }
 
     readonly property var messages: ({
                                          "server_unreachable":
@@ -48,6 +65,7 @@ FocusScope {
 
     function newCode() {
         poll.stop()
+        resumedSignIn = false
         const ticket = ++generation
         step = "link"
         code = ""
@@ -94,10 +112,12 @@ FocusScope {
         provider.request("setupResume").then(result => {
             if (ticket !== generation)
                 return
-            if (result.relink)
+            if (result.relink) {
                 newCode()
-            else
+            } else {
+                resumedSignIn = true
                 linked(result)
+            }
         }, reason => {
             if (ticket === generation)
                 fail(reason)
@@ -134,6 +154,8 @@ FocusScope {
         // reachable before anything is tried.
         if (servers.length === 0)
             error = "No Plex Media Servers are shared with this account. You can still enter a server address."
+        else if (addingServer && servers.every(server => added(server)))
+            error = "Every server on this Plex account is already in Spool."
         Qt.callLater(() => form.focusChoices())
     }
 
@@ -218,6 +240,10 @@ FocusScope {
     function choose(server, typedAddress) {
         if (busy)
             return
+        if (added(server) && !typedAddress && setupContext.purpose !== "reconnect") {
+            error = server.name + " is already in Spool."
+            return
+        }
         const ticket = generation
         busy = true
         error = ""
@@ -255,6 +281,9 @@ FocusScope {
             Qt.callLater(() => form.focusChoices())
             return true
         }
+        // Nothing behind a resumed list but the screen that opened it.
+        if (step === "servers" && resumedSignIn && !homeUsers.length)
+            return false
         if (homeUsers.length && (step === "servers" || step === "homePin")) {
             ++generation
             busy = false
@@ -305,31 +334,40 @@ FocusScope {
         busy: root.busy
         error: root.error
         code: root.step === "link" ? root.code : ""
-        title: root.step === "servers" ? "Choose a Plex server" : root.step === "home" ? "Choose a Plex Home user" :
-                                                                                         root.step === "homePin"
-                                                                                         ? "PIN for "
-                                                                                           + root.selectedHomeUser.name :
-                                                                                           "Link your Plex account"
+        title: root.step === "servers" ? (root.addingServer ? "Add a Plex server" : "Choose a Plex server") : root.step
+                                         === "home" ? "Choose a Plex Home user" : root.step === "homePin" ? "PIN for "
+                                                                                                            + root.selectedHomeUser.name :
+                                                                                                            "Link your Plex account"
         instructions: root.step === "home" || root.step === "homePin"
                       ? "Plex Home PINs protect this Home, not unrelated accounts signed in to Spool." : ""
         choices: root.step === "home" ? root.homeUsers.map(member => ({
             title: member.name + (member.homeProtected ? " · PIN required" : "")
         })) : root.step === "servers" ? root.servers.map(server => ({
             title: server.name,
-            address: server.connections && server.connections.length ? server.connections[0].uri : ""
+            address: root.serverDetail(server),
+            badge: root.added(server) ? "Added" : ""
         })).concat([
         {
             title: "Enter a server address",
-            address: "For a custom access URL, such as plex.example.com"
+            address: "For a custom access URL, such as plex.example.com",
+            icon: "link"
         }
-        ]) : []
+        ]).concat(root.resumedSignIn ? [
+        {
+            title: "Use a different Plex account",
+            address: "Link another account at plex.tv/link",
+            icon: "person_add"
+        }
+        ] : []) : []
         pinRequired: root.step === "homePin"
         pinLabel: "Plex Home PIN"
         backText: root.step !== "link" ? "Back" : ""
         onRetryRequested: root.newCode()
         onBackRequested: root.back()
-        onChoiceSelected: index => root.step === "home" ? root.chooseHome(root.homeUsers[index]) : index >= root.servers.length
-                                                          ? root.enterAddress() : root.choose(root.servers[index])
+        onChoiceSelected: index => root.step === "home" ? root.chooseHome(root.homeUsers[index]) : index < root.servers.length
+                                                          ? root.choose(root.servers[index]) : index
+                                                            === root.servers.length ? root.enterAddress() : root.newCode(
+                                                                                          )
 
         onPinSubmitted: value => root.submitHome(value)
     }

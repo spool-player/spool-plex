@@ -416,8 +416,11 @@ export function run() {
             'GET https://plex.tv/api/v2/resources': [
                 { name: 'Player', provides: 'player', clientIdentifier: 'p' },
                 { name: 'Home', provides: 'server,player', clientIdentifier: 'machine', accessToken: 'server-token',
-                    connections: [{ uri: remote, local: false }, { uri: local, local: true }] }],
-            ['GET ' + remote + '/']: { MediaContainer: { machineIdentifier: 'machine' } }
+                    owned: true, connections: [{ uri: remote, local: false }, { uri: local, local: true }] },
+                { name: 'Friend', provides: 'server', clientIdentifier: 'friend', accessToken: 'friend-token',
+                    owned: false, sourceTitle: 'Bob', connections: [{ uri: 'https://friend.example:32400', local: false }] }],
+            ['GET ' + remote + '/']: { MediaContainer: { machineIdentifier: 'machine' } },
+            'GET https://friend.example:32400/': { MediaContainer: { machineIdentifier: 'friend' } }
         }, [local]);
         const login = createSource({}, { device: device, emit: tv.host.emit });
         return login.pinStart({}, tv.host).then(pin => {
@@ -425,8 +428,10 @@ export function run() {
             return login.pinPoll({ id: pin.id }, tv.host);
         }).then(result => {
             check(result.user.id === '5' && result.user.name === 'Ann', 'the Plex user');
-            check(result.servers.length === 1 && !('token' in result.servers[0])
+            check(result.servers.length === 2 && !('token' in result.servers[0])
                 && result.servers[0].connections[0].uri === local, 'servers only, local address first, no credential in UI');
+            check(result.servers[0].owned === true && result.servers[1].owned === false
+                && result.servers[1].owner === 'Bob', 'whose server each one is, as a Plex app shows it');
             const resources = tv.calls.filter(c => c.path === '/api/v2/resources').pop();
             check(resources.options.headers['X-Plex-Token'] === 'user-token', 'plex.tv is asked with the user token');
             return login.connect({ serverId: result.servers[0].id }, tv.host);
@@ -436,6 +441,22 @@ export function run() {
             const saved = tv.events.filter(event => event[0] === 'configuration').pop()[1];
             check(!('configuration' in result) && saved.server === remote && saved.token === 'server-token',
                 'the address and resource credential that answered persist only through the private host event');
+            // Another server from the same Plex sign-in, as a Plex app offers
+            // it: no new link code, the account's servers straight away.
+            const pins = tv.calls.filter(c => c.path.indexOf('/api/v2/pins') === 0).length;
+            const more = createSource({ setupAccount: saved, setupContext: { purpose: 'addServer' } },
+                { device: device, emit: tv.host.emit });
+            return more.setupResume({}, tv.host).then(resumed => {
+                check(!resumed.relink && resumed.servers.length === 2 && resumed.user.id === '5'
+                    && tv.calls.filter(c => c.path.indexOf('/api/v2/pins') === 0).length === pins,
+                    'an ordinary Plex account lists its servers again without a new code');
+                return more.connect({ serverId: 'friend' }, tv.host);
+            }).then(added => {
+                check(added.account === '5@friend' && added.detail === 'Friend', 'the second server is its own account');
+                const revoked = createSource({ setupAccount: saved }, {
+                    device: device, emit: () => {} });
+                return revoked.setupResume({}, { device: device, http: () => respond({}, 401) });
+            }).then(revoked => check(revoked.relink === true, 'a revoked sign-in asks for a new code, not an error'));
         });
     }).then(() => {
         step = 'notifications';

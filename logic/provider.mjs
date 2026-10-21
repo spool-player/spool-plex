@@ -151,7 +151,8 @@ export function createSource(configuration, sourceHost) {
         });
         const answer = {
             user: publicUser(result.user),
-            servers: setupServers.map(value => ({ id: value.id, name: value.name, connections: value.connections }))
+            servers: setupServers.map(value => ({ id: value.id, name: value.name, connections: value.connections,
+                owned: value.owned === true || value.owned === 1 || value.owned === '1', owner: value.owner || '' }))
         };
         if (result.homeUsers) answer.homeUsers = result.homeUsers.map(publicUser);
         return answer;
@@ -273,7 +274,8 @@ export function createSource(configuration, sourceHost) {
                 return true;
             })
             .map(r => ({ id: r.clientIdentifier, name: r.name || '', token: r.accessToken,
-                connections: connections(r.connections), owned: r.owned }));
+                connections: connections(r.connections), owned: r.owned,
+                owner: typeof r.sourceTitle === 'string' ? r.sourceTitle : '' }));
     }
     function openSocket() {
         if (server && token && sourceHost.socket && !disconnect && !stopped)
@@ -499,16 +501,24 @@ export function createSource(configuration, sourceHost) {
             ++setupGeneration;
             return {};
         },
+        // Adding a profile or another server reuses the plex.tv sign-in of an
+        // account already in Spool, as a Plex app lists the account's other
+        // servers without asking for a new link code.
         setupResume: (args, host) => {
             const saved = configuration.setupAccount;
-            if (!saved || !saved.homeFamilyId || !saved.linkedAccountToken)
+            if (!saved || !saved.linkedAccountToken)
                 return { relink: true };
             const generation = ++setupGeneration;
             return tv(host, 'GET', '/api/v2/user', {}, saved.linkedAccountToken)
                 .then(profile => home.linked(host, profile, saved.linkedAccountToken))
                 .then(result => {
-                    if (result.user.homeFamilyId !== saved.homeFamilyId) throw new Error('home_identity_mismatch');
+                    if (saved.homeFamilyId && result.user.homeFamilyId !== saved.homeFamilyId)
+                        throw new Error('home_identity_mismatch');
                     return setupResult(result, generation);
+                }, error => {
+                    // A revoked sign-in is not an error to show; link again.
+                    if (code(error) === 'http_401') return { relink: true };
+                    throw error;
                 });
         },
         pinStart: (args, host) => {
