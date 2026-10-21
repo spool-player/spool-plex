@@ -149,9 +149,13 @@ FocusScope {
         user = result.user
         servers = result.servers || []
         step = "servers"
-        // Even one server is shown rather than chosen: the addresses plex.tv
-        // lists may not work from here, and Enter a server address must stay
-        // reachable before anything is tried.
+        // One server is simply tried. If none of the addresses plex.tv lists
+        // answer from here, the list stays up with the error, and Enter a
+        // server address is right there.
+        if (servers.length === 1 && !added(servers[0])) {
+            choose(servers[0])
+            return
+        }
         if (servers.length === 0)
             error = "No Plex Media Servers are shared with this account. You can still enter a server address."
         else if (addingServer && servers.every(server => added(server)))
