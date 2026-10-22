@@ -56,6 +56,8 @@ Loader {
             provider: picker.provider
             pinLabel: "Plex Home PIN"
             pinExplanation: "Enter this user's PIN. Cancelling keeps your current account active."
+            rememberLabel: "Skip this PIN when Spool starts"
+            rememberDescription: "Spool opens as this user on this device. Switching users still asks."
             sortChoices: [
                 {
                     label: "Release date",

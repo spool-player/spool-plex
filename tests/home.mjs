@@ -341,16 +341,43 @@ function credentialChain() {
             check(saved[0].token === 'member-pms' && saved[1].token === 'member-other' && saved.every(value =>
                 value.linkedAccountToken === 'full' && value.activeAccountToken === 'member' && value.homeFamilyId === '1'),
             'each server keeps its own resource token beside one member and one Home credential');
+            check(saved.every(value => !('homeAutomaticSignIn' in value)), 'a PIN is not remembered unless asked');
             f.state.events = [];
             const restarted = createSource(Object.assign({}, saved[1]), f.host);
             return restarted.activate(args('startup'), f.host).then(result => {
-                check(result.pick.kind === 'homePin', 'a protected member asks for the PIN again after restart');
-                return restarted.activate(args('startup', { answers: { pin: '1234' } }), f.host);
+                check(result.pick.kind === 'homePin' && result.pick.remember === false,
+                    'a protected member asks for the PIN again after restart; a managed one cannot skip it');
+                return restarted.activate(args('startup', { answers: { pin: '1234', remember: true } }), f.host);
             }).then(() => {
                 const written = f.state.events.filter(row => row.event === 'configuration').map(row => row.payload);
                 check(written.length > 0 && written.every(value => !('linkedAccountToken' in value)
                     && value.token === 'member-other' && value.activeAccountToken === 'member'),
                 'unlocking rewrites only this server and member credentials, never the Home credential');
+                check(!f.state.events.some(row => row.event === 'activationConfiguration'),
+                    'a managed member cannot turn on automatic sign-in by unlocking');
+                restarted.signOut();
+                return rememberedPin();
+            });
+        });
+}
+function rememberedPin() {
+    const f = fixture();
+    const asked = createSource({}, f.host);
+    return asked.pinPoll({ id: '7' }, f.host)
+        .then(() => asked.homeSelect({ userId: '1', pin: '1234', remember: true }, f.host))
+        .then(result => asked.connect({ serverId: result.servers[0].id }, f.host))
+        .then(() => {
+            const saved = f.state.events.find(row => row.event === 'configuration').payload;
+            check(saved.homeAutomaticSignIn === true, 'asked at sign-in, the new profile starts without its PIN');
+            f.state.events = [];
+            const restarted = createSource(Object.assign({}, saved, { homeAutomaticSignIn: false }), f.host);
+            return restarted.activate(args('switch'), f.host).then(result => {
+                check(result.pick.kind === 'homePin' && result.pick.remember === true, 'a regular member is offered to skip it');
+                return restarted.activate(args('switch', { answers: { pin: '1234', remember: true } }), f.host);
+            }).then(() => {
+                const option = f.state.events.find(row => row.event === 'activationConfiguration');
+                check(option && option.payload.configuration.homeAutomaticSignIn === true,
+                    'remembering the PIN turns on automatic sign-in for this device');
                 restarted.signOut();
             });
         });

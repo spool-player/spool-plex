@@ -164,8 +164,10 @@ export function createHome(options) {
             return users(host, configuration.linkedAccountToken).then(members => {
                 const member = members.find(user => user.id === activation.identityId);
                 if (!member) throw new Error('home_identity_mismatch');
+                // A managed user cannot change automatic sign-in, so is not offered it.
                 if (member.homeProtected && (!args.answers || typeof args.answers.pin !== 'string'))
-                    return { pick: { kind: 'homePin', title: member.name || configuration.userName || 'Plex Home' } };
+                    return { pick: { kind: 'homePin', title: member.name || configuration.userName || 'Plex Home',
+                        remember: !member.homeManaged } };
                 // An unprotected member keeps the token Plex already issued to
                 // this device; switching again is only needed once it is rejected.
                 const switched = () => switchUser(host, configuration.linkedAccountToken, member,
@@ -173,7 +175,14 @@ export function createHome(options) {
                 const resumed = member.homeProtected || !configuration.activeAccountToken ? switched()
                     : resources(host, member, configuration.activeAccountToken)
                         .catch(error => code(error) === 'http_401' ? switched() : Promise.reject(error));
-                return resumed.then(result => finish(host, result));
+                return resumed.then(result => finish(host, result)).then(result => {
+                    const remember = args.answers && args.answers.remember;
+                    if (member.homeProtected && typeof remember === 'boolean' && !managed && remember !== automatic) {
+                        automatic = remember;
+                        options.emit('activationConfiguration', { configuration: { homeAutomaticSignIn: automatic } });
+                    }
+                    return result;
+                });
             });
         },
         settings: () => {

@@ -7,7 +7,9 @@ FocusScope {
     id: root
 
     property var provider
-    property string step: "link"
+    // "resume" while an existing sign-in lists its servers, so linking never
+    // shows on the way to a list that was already there.
+    property string step: ""
     property string pin: ""
     property string code: ""
     property var user: ({})
@@ -17,6 +19,9 @@ FocusScope {
     property var selectedHomeUser: ({})
     property bool busy: false
     property string error: ""
+    // The server being connected and the addresses being tried, in order.
+    property var connecting: null
+    property var trying: []
     property int generation: 0
     readonly property string trademark: "Plex and the Plex Play logo are trademarks of Plex and used under a license."
     readonly property var setupContext: provider && provider.arguments ? provider.arguments.setupContext || ({}) : ({})
@@ -33,9 +38,16 @@ FocusScope {
     }
 
     function serverDetail(server) {
-        if (server.owned)
-            return "Your server"
-        return server.owner ? "Shared by " + server.owner : "Shared with you"
+        const whose = server.owned ? "Your server" : server.owner ? "Shared by " + server.owner : "Shared with you"
+        // An address its owner set up reads better than any plex.direct one.
+        const own = (server.connections || []).find(connection => !connection.local && !connection.relay && !
+                                                                  /^(Local|Remote) · /.test(connection.label || ""))
+        return own ? whose + " · " + own.label : whose
+    }
+
+    function addressList(labels) {
+        return labels.length <= 1 ? labels.join("") : labels.slice(0, -1).join(", ") + " or " + labels[labels.length
+                                                                                                       - 1]
     }
 
     readonly property var messages: ({
@@ -60,7 +72,12 @@ FocusScope {
 
     function fail(reason) {
         busy = false
-        error = messages[reason] || "Couldn't sign in. Please try again."
+        if (reason === "server_unreachable" && connecting && trying.length)
+            error = "Couldn't reach " + connecting.name + " at " + addressList(trying)
+                    + ". If it has its own web address, choose Enter a server address."
+        else
+            error = messages[reason] || "Couldn't sign in. Please try again."
+        connecting = null
     }
 
     function newCode() {
@@ -108,6 +125,7 @@ FocusScope {
             return
         }
         const ticket = ++generation
+        step = "resume"
         busy = true
         provider.request("setupResume").then(result => {
             if (ticket !== generation)
@@ -224,7 +242,8 @@ FocusScope {
         error = ""
         provider.request("homeSelect", {
                              "userId": selectedHomeUser.id,
-                             "pin": value
+                             "pin": value,
+                             "remember": value.length > 0 && form.remember
                          }).then(result => {
                              if (ticket !== generation)
                                  return
@@ -251,6 +270,12 @@ FocusScope {
         const ticket = generation
         busy = true
         error = ""
+        connecting = server
+        trying = (typedAddress ? [String(typedAddress).replace(/^https?:\/\//i, "")] : []).concat(server.connections.map(
+                                                                                                      connection
+                                                                                                      => connection.label
+                                                                                                         || connection.uri)).filter(
+                    (label, index, all) => all.indexOf(label) === index)
         let allowed = Promise.resolve()
         for (const connection of server.connections)
             allowed = allowed.then(() => provider.allowOrigin(connection.uri))
@@ -275,7 +300,8 @@ FocusScope {
     function back() {
         if (busy)
             provider.request("setupCancel").catch(() => {})
-        if (step === "link")
+        connecting = null
+        if (step === "link" || step === "resume")
             return false
         if (step === "address") {
             ++generation
@@ -338,12 +364,18 @@ FocusScope {
         busy: root.busy
         error: root.error
         code: root.step === "link" ? root.code : ""
-        title: root.step === "servers" ? (root.addingServer ? "Add a Plex server" : "Choose a Plex server") : root.step
-                                         === "home" ? "Choose a Plex Home user" : root.step === "homePin" ? "PIN for "
-                                                                                                            + root.selectedHomeUser.name :
-                                                                                                            "Link your Plex account"
+        title: root.step === "servers" || root.step === "resume" ? (root.addingServer ? "Add a Plex server" :
+                                                                                        "Choose a Plex server") :
+                                                                   root.step === "home" ? "Choose a Plex Home user" :
+                                                                                          root.step === "homePin"
+                                                                                          ? "PIN for "
+                                                                                            + root.selectedHomeUser.name :
+                                                                                            "Link your Plex account"
         instructions: root.step === "home" || root.step === "homePin"
-                      ? "Plex Home PINs protect this Home, not unrelated accounts signed in to Spool." : ""
+                      ? "Plex Home PINs protect this Home, not unrelated accounts signed in to Spool." : root.busy
+                        && root.connecting ? "Connecting to " + root.connecting.name + " · trying " + root.addressList(
+                                                 root.trying) : root.step === "resume" && root.busy
+                                             ? "Finding the servers on your Plex account…" : ""
         choices: root.step === "home" ? root.homeUsers.map(member => ({
             title: member.name + (member.homeProtected ? " · PIN required" : "")
         })) : root.step === "servers" ? root.servers.map(server => ({
@@ -365,7 +397,10 @@ FocusScope {
         ] : []) : []
         pinRequired: root.step === "homePin"
         pinLabel: "Plex Home PIN"
-        backText: root.step !== "link" ? "Back" : ""
+        rememberLabel: root.selectedHomeUser.homeManaged ? "" : "Skip this PIN when Spool starts"
+        rememberDescription: "Spool opens as this user on this device. Switching users still asks."
+        retryVisible: root.step === "link" || !!root.error && root.step === "resume"
+        backText: root.step !== "link" && root.step !== "resume" ? "Back" : ""
         onRetryRequested: root.newCode()
         onBackRequested: root.back()
         onChoiceSelected: index => root.step === "home" ? root.chooseHome(root.homeUsers[index]) : index < root.servers.length
@@ -411,6 +446,14 @@ FocusScope {
                 Layout.preferredHeight: Metrics.scaled(24)
                 running: root.busy && root.step === "address"
                 visible: running
+            }
+            SecondaryText {
+                Layout.fillWidth: true
+                visible: root.busy && root.step === "address"
+                text: root.connecting ? "Connecting to " + root.connecting.name + " · trying " + root.addressList(
+                                            root.trying) : "Checking " + address.text.trim().replace(/^https?:\/\//i,
+                                                                                                     "") + "…"
+                wrapMode: Text.WordWrap
             }
             SecondaryText {
                 Layout.fillWidth: true
