@@ -71,26 +71,64 @@ function parse(response) {
     return response.body ? JSON.parse(response.body) : {};
 }
 
-// Prefer local addresses, then remote, then Plex's relay. Advertised local
-// addresses also get an HTTP fallback when the plex.direct certificate fails.
+// Local addresses, then ones the owner set up (a custom access URL), then
+// plex.direct's remote ones, then Plex's relay. Advertised local addresses
+// also get an HTTP fallback when the plex.direct certificate fails.
 export function connections(list) {
-    const rank = c => (c.relay ? 2 : c.local ? 0 : 1);
-    const sorted = (Array.isArray(list) ? list : []).filter(c => c && customAddress(c.uri)).sort((a, b) => rank(a) - rank(b));
+    const sorted = (Array.isArray(list) ? list : []).filter(c => c && customAddress(c.uri))
+        .map(c => ({ uri: c.uri, local: Boolean(c.local) && !c.relay, relay: Boolean(c.relay), address: c.address, port: c.port }))
+        .sort((a, b) => rank(a) - rank(b));
     const result = [];
-    const add = (uri, local) => {
+    const add = (uri, local, relay) => {
         const normalized = customAddress(uri);
-        if (!normalized) return;
-        if (!result.some(c => c.uri === normalized))
-            result.push({ uri: normalized, local: local });
+        if (!normalized || result.some(c => c.uri === normalized))
+            return;
+        const connection = { uri: normalized, local: local, label: addressLabel(normalized, local, relay) };
+        if (relay)
+            connection.relay = true;
+        result.push(connection);
     };
     for (const c of sorted) {
-        add(c.uri, Boolean(c.local) && !c.relay);
-        if (c.local && !c.relay && c.address && c.port) {
+        add(c.uri, c.local, c.relay);
+        if (c.local && c.address && c.port) {
             const address = c.address.indexOf(':') >= 0 && c.address[0] !== '[' ? '[' + c.address + ']' : c.address;
-            add('http://' + address + ':' + c.port, true);
+            add('http://' + address + ':' + c.port, true, false);
         }
     }
     return result;
+}
+
+// plex.direct names carry the server's IP address in their first label, so
+// the dashed address is all a person needs to see of them.
+function plexDirectAddress(host) {
+    const match = /^([0-9a-f-]+)\.[0-9a-f]+\.plex\.direct$/i.exec(host);
+    if (!match)
+        return '';
+    const parts = match[1].split('-');
+    return parts.length === 4 ? parts.join('.') : parts.join(':');
+}
+
+function rank(c) {
+    if (c.relay) return 3;
+    if (c.local) return 0;
+    const host = String(c.uri || '').replace(/^[a-z]+:\/\/|:\d+$/gi, '');
+    return plexDirectAddress(host) || /^[\d.]+$|^\[/.test(host) ? 2 : 1;
+}
+
+// What a person can read: "plex.example.com", "Local · 192.168.1.5",
+// "Remote · 203.0.113.9" or "Plex Relay", never a plex.direct name.
+export function addressLabel(uri, local, relay) {
+    if (relay)
+        return 'Plex Relay';
+    const match = /^(https?):\/\/([^/:]+|\[[^\]]+\])(?::(\d+))?$/i.exec(String(uri || ''));
+    if (!match)
+        return String(uri || '');
+    const direct = plexDirectAddress(match[2]);
+    const port = match[3] && ['80', '443', '32400'].indexOf(match[3]) < 0 ? ':' + match[3] : '';
+    if (!direct && !/^[\d.]+$|^\[/.test(match[2]))
+        return match[2] + port;
+    const label = (local ? 'Local · ' : 'Remote · ') + (direct || match[2].replace(/^\[|\]$/g, '')) + port;
+    return match[1].toLowerCase() === 'http' ? label + ' (unencrypted)' : label;
 }
 
 // An address the viewer typed for their server, such as a custom access URL
@@ -169,48 +207,75 @@ export function createSource(configuration, sourceHost) {
             headers: headers(device, userToken) }).then(parse);
     }
 
-    // Four probes at most share one four-second deadline. Preserve preference
-    // order even when a remote connection answers before a local connection.
+    // Four probes at most share one four-second deadline. The address that
+    // proves the server fastest wins; ones that answer nearly as fast go by
+    // preference instead (local, then the owner's own address, plex.direct,
+    // and earlier in the list), and the relay only when nothing else answers.
+    // Once one answers, a slower address cannot win, so waiting stops soon after.
     function reach(host, candidates, accessToken, expectedId) {
-        let expired = false;
+        let settled = false;
         let next = 0;
         const results = [];
-        const deadline = host.delay(4000).then(() => { expired = true; return 'network_error'; });
+        let settle = null;
+        const done = new Promise(resolve => { settle = resolve; });
+        const near = fastest => fastest * 1.5 + 50;
+        host.delay(4000).then(() => settle());
         function worker() {
-            if (expired || stopped || next >= candidates.length) return Promise.resolve();
+            if (settled || stopped || next >= candidates.length) return Promise.resolve();
             const index = next++;
-            return Promise.race([
-                host.http(candidates[index].uri + '/', { headers: headers(device, accessToken) })
-                    .then(parse).then(result => container(result).machineIdentifier === expectedId
-                        ? 'ok' : 'home_server_identity_mismatch', error => code(error)),
-                deadline
-            ]).then(result => { results[index] = result; return worker(); });
+            const began = Date.now();
+            return host.http(candidates[index].uri + '/', { headers: headers(device, accessToken) })
+                .then(parse).then(result => container(result).machineIdentifier === expectedId
+                    ? 'ok' : 'home_server_identity_mismatch', error => code(error))
+                .then(result => {
+                    if (settled) return null;
+                    const ms = Date.now() - began;
+                    const first = result === 'ok' && !candidates[index].relay
+                        && !results.some((r, i) => r && r.result === 'ok' && !candidates[i].relay);
+                    results[index] = { result: result, ms: ms };
+                    if (first) host.delay(near(ms) - ms).then(() => settle());
+                    return worker();
+                });
         }
-        return Promise.all(candidates.slice(0, 4).map(() => worker())).then(() => {
+        Promise.all(candidates.slice(0, 4).map(() => worker())).then(() => settle(), () => settle());
+        return done.then(() => {
+            settled = true;
             if (stopped) throw new Error('cancelled');
-            const index = results.indexOf('ok');
-            if (index >= 0) return candidates[index];
-            if (results.some(result => result === 'origin_denied')) throw new Error('origin_denied');
-            if (results.some(result => result === 'http_401' || result === 'http_403')) throw new Error('http_401');
-            if (results.indexOf('home_server_identity_mismatch') >= 0) throw new Error('home_server_identity_mismatch');
+            const answered = candidates.map((c, i) => ({ c: c, i: i, r: results[i] })).filter(x => x.r && x.r.result === 'ok');
+            const direct = answered.filter(x => !x.c.relay);
+            const pool = direct.length ? direct : answered;
+            if (pool.length) {
+                const fastest = Math.min.apply(null, pool.map(x => x.r.ms));
+                return pool.filter(x => x.r.ms <= near(fastest)).sort((a, b) => rank(a.c) - rank(b.c) || a.i - b.i)[0].c;
+            }
+            const codes = results.map(r => r && r.result);
+            if (codes.indexOf('origin_denied') >= 0) throw new Error('origin_denied');
+            if (codes.some(result => result === 'http_401' || result === 'http_403')) throw new Error('http_401');
+            if (codes.indexOf('home_server_identity_mismatch') >= 0) throw new Error('home_server_identity_mismatch');
             throw new Error('network_error');
         });
     }
 
+    // The address that last answered first, with what plex.tv said of it.
     function savedCandidates() {
-        const candidates = [{ uri: server }];
+        const candidates = [Object.assign({}, known.find(c => c.uri === server) || {}, { uri: server })];
         for (const c of known) {
             if (c.uri && !candidates.some(seen => seen.uri === c.uri))
-                candidates.push({ uri: c.uri, local: Boolean(c.local) });
+                candidates.push(c);
         }
         return candidates;
+    }
+
+    function labelOf(uri) {
+        const saved = known.find(c => c.uri === uri);
+        return saved && saved.label || addressLabel(uri, Boolean(saved && saved.local), Boolean(saved && saved.relay));
     }
 
     function useServer(base) {
         if (server === base)
             return;
         server = base;
-        sourceHost.emit('configuration', { server: base });
+        sourceHost.emit('configuration', { server: base, serverAddress: labelOf(base) });
         if (disconnect) {
             disconnect();
             disconnect = null;
@@ -294,15 +359,15 @@ export function createSource(configuration, sourceHost) {
             const candidates = approved.slice(0, 1);
             for (const c of target.connections.concat(approved)) {
                 if (approved.some(seen => seen.uri === c.uri) && !candidates.some(seen => seen.uri === c.uri))
-                    candidates.push({ uri: c.uri, local: Boolean(c.local) });
+                    candidates.push(c);
             }
             return reach(host, candidates, target.token, serverId).then(chosen => {
                 server = chosen.uri;
                 token = target.token;
                 known = candidates;
                 activeAccountToken = activeToken;
-                sourceHost.emit('configuration', { server: server, connections: known, token: token,
-                    activeAccountToken: activeToken, owned: target.owned });
+                sourceHost.emit('configuration', { server: server, serverAddress: labelOf(server), connections: known,
+                    token: token, activeAccountToken: activeToken, owned: target.owned });
             });
         } });
 
@@ -482,8 +547,12 @@ export function createSource(configuration, sourceHost) {
             const generation = ++setupGeneration;
             setupUser = null;
             setupServers = [];
-            return home.select({ user: setupLinked, userId: args.userId, pin: args.pin }, host)
-                .then(result => setupResult(result, generation));
+            return home.select({ user: setupLinked, userId: args.userId, pin: args.pin }, host).then(result => {
+                const answer = setupResult(result, generation);
+                // Asked with the PIN: skip it when Spool next starts as this user.
+                setupUser.rememberPin = args.remember === true && setupUser.homeProtected && !setupUser.homeManaged;
+                return answer;
+            });
         },
         homeSettings: home.settings,
         homeAutomaticSignIn: home.setAutomatic,
@@ -561,18 +630,19 @@ export function createSource(configuration, sourceHost) {
             // A typed address is tried first and kept with the advertised ones;
             // like them, it must prove it is the chosen server below.
             const typed = customAddress(args.address);
-            const candidates = (typed ? [{ uri: typed, local: false }] : [])
+            const candidates = (typed ? [{ uri: typed, local: false, label: addressLabel(typed, false, false) }] : [])
                 .concat((target.connections || []).filter(c => c.uri !== typed));
             return reach(host, candidates, target.token, target.id).then(chosen => {
                 if (stopped || generation !== setupGeneration) throw new Error('cancelled');
-                sourceHost.emit('configuration', {
-                    server: chosen.uri, connections: candidates, token: target.token,
+                sourceHost.emit('configuration', Object.assign(user.rememberPin ? { homeAutomaticSignIn: true } : {}, {
+                    server: chosen.uri, serverAddress: chosen.label || addressLabel(chosen.uri, chosen.local, chosen.relay),
+                    connections: candidates, token: target.token,
                     serverId: target.id, serverName: target.name || '', userId: user.id, userName: user.name || '',
                     owned: target.owned, activeAccountToken: user.activeAccountToken || '',
                     linkedAccountToken: user.linkedAccountToken || '',
                     homeFamilyId: user.homeFamilyId || '', homeProtected: user.homeProtected === true,
                     homeManaged: user.homeManaged === true
-                });
+                }));
                 return { account: user.id + '@' + target.id, group: target.id,
                     label: user.name || '', detail: target.name || '' };
             }).catch(error => {

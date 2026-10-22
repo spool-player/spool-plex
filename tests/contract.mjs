@@ -249,6 +249,38 @@ function playbackFollowupContracts() {
         });
 }
 
+// Which saved address a validated account settles on, when `slow` takes a
+// third of a second to answer and the others answer at once.
+function settles(server, list, slow) {
+    const events = [];
+    const spin = ms => { const end = Date.now() + ms; while (Date.now() < end) { } };
+    const host = { device: device, capabilities: { accountActivation: true }, delay: () => new Promise(() => {}),
+        emit: (type, payload) => events.push([type, payload]),
+        http: url => {
+            if (slow && url.indexOf(slow) === 0) spin(300);
+            return respond({ MediaContainer: { machineIdentifier: 'machine' } });
+        } };
+    const source = createSource({ server: server, serverId: 'machine', token: 'server-token', connections: connections(list) }, host);
+    return source.activate({ reason: 'startup', lastUsed: true }, host).then(() => {
+        const moved = events.filter(e => e[0] === 'configuration').pop();
+        source.signOut();
+        return moved ? moved[1] : { server: server };
+    });
+}
+
+function addressChoice() {
+    const own = 'https://plex.example.com:443';
+    const list = [{ uri: local, local: true }, { uri: remote, local: false }, { uri: own, local: false }];
+    return settles(own, list, '').then(chosen => {
+        check(chosen.server === local && chosen.serverAddress === 'Local · 10.0.0.2', 'a local address that answers as fast wins');
+        return settles(local, list, local);
+    }).then(chosen => {
+        check(chosen.server === own && chosen.serverAddress === 'plex.example.com',
+            "a slow local address (a VPN, say) loses to the owner's own address");
+        return settles(remote, list.slice(1), '');
+    }).then(chosen => check(chosen.server === own, "as fast as plex.direct, the owner's own address wins"));
+}
+
 export function run() {
     step = 'connections';
     const ordered = connections([
@@ -258,13 +290,21 @@ export function run() {
     ]);
     check(ordered.map(c => c.uri).join(' ') === [local, 'http://10.0.0.2:32400', remote, 'https://relay.plex.direct:8443']
         .join(' '), 'local first, plain HTTP as a local fallback, relay last');
+    check(ordered.map(c => c.label).join(' | ') === 'Local · 10.0.0.2 | Local · 10.0.0.2 (unencrypted) | Remote · 203.0.113.9 | Plex Relay',
+        'plex.direct names read as the address they stand for');
+    const owned = connections([{ uri: remote, local: false }, { uri: 'https://plex.example.com:443', local: false }]);
+    check(owned[0].uri === 'https://plex.example.com:443' && owned[0].label === 'plex.example.com',
+        "the owner's own address goes before plex.direct's");
 
     const { pms, source } = account();
     check(source.describe().artwork.indexOf(local + '/photo/:/transcode?width={width}') === 0
         && source.describe().artwork.indexOf('X-Plex-Token=server-token') > 0, 'artwork template');
 
-    step = 'search';
-    return source.search({ query: 'film', limit: 10 }, pms.host).then(page => {
+    step = 'address choice';
+    return addressChoice().then(() => {
+        step = 'search';
+        return source.search({ query: 'film', limit: 10 }, pms.host);
+    }).then(page => {
         check(page.items.length === 4 && page.items[0].id === '10' && page.items[3].type === 'Episode',
             'hubs of media, in order; others dropped');
         const headers = pms.calls[0].options.headers;
