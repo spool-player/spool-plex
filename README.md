@@ -389,13 +389,11 @@ To try a checkout in Spool without releasing it, configure Spool with
 
 ## Releasing
 
-Release **0.2.0** connects at whichever of a server's addresses answers fastest,
-preferring local ones and then the owner's own address (a custom access URL)
-over plex.direct and the relay, and names addresses readably ("Local ·
-192.168.1.5", "plex.example.com") instead of by their plex.direct names. Adding
-a server no longer flashes the link-code screen, connecting lists the addresses
-being tried, and a Plex Home PIN can be remembered for startup on that device.
-It needs Spool 0.10.0 or later.
+Release **0.2.1** stops asking for the PIN of the Plex account this device
+signed in with, which Plex itself never requires; other Home members' PINs are
+still asked for unless remembered. It keeps 0.2.0's fastest-address
+connections, readable address names and remembered Home PINs, and needs Spool
+0.10.0 or later.
 
 Bump `version` in `manifest.json` when needed, push `main`, then push the matching `v<version>` tag.
 The workflow verifies pinned SDK hashes, runs the contract in Qt JIT and interpreter modes,
