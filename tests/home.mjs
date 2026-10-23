@@ -48,7 +48,9 @@ function fixture() {
                 check(url.indexOf('pin=') < 0, 'PIN never enters URLs');
                 const id = path.split('/')[4];
                 if (state.switchStatus !== 200) return Promise.resolve({ status: state.switchStatus, body: '' });
-                if (options.body !== (id === '3' ? 'pin=' : 'pin=1234')) response = { status: 401, body: '' };
+                // As plex.tv: no PIN for an unprotected member or the linked account itself.
+                const free = id === '3' || id === String(ids[state.linkedAs]);
+                if (options.body !== (free ? 'pin=' : 'pin=1234')) response = { status: 401, body: '' };
                 else response = xml('<user id="' + id + '" authenticationToken="'
                     + { 1: 'full', 2: 'member', 3: state.staleGuest ? 'guest2' : 'guest' }[id] + '"/>');
             } else if (path === '/api/v2/user') {
@@ -362,6 +364,8 @@ function credentialChain() {
 }
 function rememberedPin() {
     const f = fixture();
+    // Linked as the child, the administrator is someone else's protected profile.
+    f.state.linkedAs = 'member';
     const asked = createSource({}, f.host);
     return asked.pinPoll({ id: '7' }, f.host)
         .then(() => asked.homeSelect({ userId: '1', pin: '1234', remember: true }, f.host))
@@ -411,6 +415,28 @@ function unprotectedResume() {
         });
     });
 }
+function linkedNeedsNoPin() {
+    const f = fixture();
+    const linking = createSource({}, f.host);
+    return linking.pinPoll({ id: '7' }, f.host).then(result => {
+        const shown = id => result.homeUsers.find(user => user.id === id);
+        check(!shown('1').homeProtected && shown('2').homeProtected,
+            'only another member\'s profile asks for its PIN, never the account that linked');
+        return linking.homeSelect({ userId: '1', pin: '' }, f.host);
+    }).then(result => {
+        check(result.user.id === '1', 'the linked account is chosen without a PIN');
+        linking.signOut();
+        // Saved before this rule, with Plex's own protected flag.
+        const saved = config({ userId: '1', userName: 'Parent', homeManaged: false, homeProtected: true,
+            activeAccountToken: 'full', token: 'full-pms' });
+        const restarted = createSource(saved, f.host);
+        return restarted.activate(args('startup'), f.host).then(proof => {
+            check(!proof.pick && proof.grant.identityId === '1',
+                'the linked account opens at startup without asking for a PIN Plex does not require');
+            restarted.signOut();
+        });
+    });
+}
 function memberLinked() {
     const f = fixture();
     f.state.linkedAs = 'member';
@@ -455,4 +481,4 @@ function setupReuse() {
         });
 }
 export function run() { return optionalHomeEndpoint().then(login).then(gate).then(family).then(automatic)
-    .then(cancellation).then(credentialChain).then(unprotectedResume).then(memberLinked).then(setupReuse); }
+    .then(cancellation).then(credentialChain).then(unprotectedResume).then(linkedNeedsNoPin).then(memberLinked).then(setupReuse); }

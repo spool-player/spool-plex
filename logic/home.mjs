@@ -46,6 +46,18 @@ export function createHome(options) {
             return root.children.filter(node => node.name === 'User').map(node => identity(node.attributes));
         });
     }
+    // Plex asks for a member's PIN only to switch to them from someone else.
+    // The account this device linked with already holds its own token, so
+    // its PIN guards nothing here and plex.tv does not ask for it.
+    function linkedIdentity(host, linkedToken) {
+        return options.tv(host, 'GET', '/api/v2/user', {}, linkedToken).then(profile => {
+            current();
+            return text(profile.id);
+        });
+    }
+    function asLinkedBy(members, linkedId) {
+        return members.map(member => member.id === linkedId ? Object.assign({}, member, { homeProtected: false }) : member);
+    }
     function resources(host, user, activeToken) {
         if (!activeToken) throw new Error('invalid_config');
         return options.tv(host, 'GET', '/api/v2/user', {}, activeToken).then(profile => {
@@ -103,7 +115,8 @@ export function createHome(options) {
             user.linkedAccountToken = token;
             user.activeAccountToken = token;
             if (!enabled) return resources(host, user, token);
-            return users(host, token).then(members => {
+            return users(host, token).then(found => {
+                const members = asLinkedBy(found, user.id);
                 if (!members.length) {
                     if (knownHome) throw new Error('home_identity_mismatch');
                     return resources(host, user, token);
@@ -128,7 +141,7 @@ export function createHome(options) {
             const linked = args.user || {};
             if (!linked.linkedAccountToken || !linked.homeFamilyId) throw new Error('home_relink_required');
             return users(host, linked.linkedAccountToken).then(members => {
-                const user = members.find(member => member.id === text(args.userId));
+                const user = asLinkedBy(members, text(linked.id)).find(member => member.id === text(args.userId));
                 if (!user) throw new Error('home_identity_mismatch');
                 const full = Object.assign({}, user, { homeFamilyId: linked.homeFamilyId,
                     linkedAccountToken: linked.linkedAccountToken });
@@ -161,8 +174,9 @@ export function createHome(options) {
                     return { grant: grant(activeToken) };
                 });
             }
-            return users(host, configuration.linkedAccountToken).then(members => {
-                const member = members.find(user => user.id === activation.identityId);
+            return Promise.all([users(host, configuration.linkedAccountToken),
+                linkedIdentity(host, configuration.linkedAccountToken)]).then(([found, linkedId]) => {
+                const member = asLinkedBy(found, linkedId).find(user => user.id === activation.identityId);
                 if (!member) throw new Error('home_identity_mismatch');
                 // A managed user cannot change automatic sign-in, so is not offered it.
                 if (member.homeProtected && (!args.answers || typeof args.answers.pin !== 'string'))
